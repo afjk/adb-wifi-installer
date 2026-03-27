@@ -1079,6 +1079,111 @@ async fn get_adb_version() -> Result<String, String> {
         .to_string())
 }
 
+#[tauri::command]
+async fn run_terminal_command(device: String, command: String) -> Result<String, String> {
+    let adb = get_adb_path();
+    let args: Vec<String> = shell_words(&command);
+    // If device is specified, prepend -s <device>
+    let mut full_args: Vec<String> = Vec::new();
+    if !device.is_empty() {
+        full_args.push("-s".to_string());
+        full_args.push(device);
+    }
+    full_args.extend(args);
+    let output = Command::new(&adb)
+        .args(&full_args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout).replace('\r', "");
+    let stderr = String::from_utf8_lossy(&output.stderr).replace('\r', "");
+    let combined = if stdout.is_empty() { stderr } else if stderr.is_empty() { stdout } else { format!("{}{}", stdout, stderr).into() };
+    Ok(combined.trim_end().to_string())
+}
+
+fn shell_words(s: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+    let mut quote_char = ' ';
+    for c in s.chars() {
+        match c {
+            '"' | '\'' if !in_quote => { in_quote = true; quote_char = c; }
+            c2 if in_quote && c2 == quote_char => { in_quote = false; }
+            ' ' if !in_quote => {
+                if !current.is_empty() { args.push(current.clone()); current.clear(); }
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.is_empty() { args.push(current); }
+    args
+}
+
+// ── Logcat streaming ────────────────────────────────────────────────────────
+
+static LOGCAT_CHILD: std::sync::OnceLock<Arc<Mutex<Option<std::process::Child>>>> =
+    std::sync::OnceLock::new();
+
+fn logcat_child_handle() -> &'static Arc<Mutex<Option<std::process::Child>>> {
+    LOGCAT_CHILD.get_or_init(|| Arc::new(Mutex::new(None)))
+}
+
+fn stop_logcat_inner() {
+    if let Ok(mut guard) = logcat_child_handle().lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+#[tauri::command]
+async fn start_logcat(
+    app: tauri::AppHandle,
+    device: String,
+    filter: String,
+) -> Result<(), String> {
+    stop_logcat_inner();
+
+    let adb = get_adb_path();
+    let mut args: Vec<String> = vec!["-s".to_string(), device, "logcat".to_string(), "-v".to_string(), "time".to_string()];
+    // Add user filter if provided (e.g. "*:W" or "MyTag:D")
+    if !filter.is_empty() {
+        for part in filter.split_whitespace() {
+            args.push(part.to_string());
+        }
+    }
+
+    let mut child = Command::new(&adb)
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let stdout = child.stdout.take().ok_or("stdout unavailable")?;
+    *logcat_child_handle().lock().unwrap() = Some(child);
+
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(l) => { let _ = app.emit("logcat_line", l); }
+                Err(_) => break,
+            }
+        }
+        let _ = app.emit("logcat_stopped", ());
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_logcat() -> Result<(), String> {
+    stop_logcat_inner();
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1109,6 +1214,9 @@ pub fn run() {
             preview_file,
             pair_device,
             get_adb_version,
+            run_terminal_command,
+            start_logcat,
+            stop_logcat,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -378,6 +378,13 @@ function getFileIcon(name) {
   return "📄";
 }
 
+// logcat行のレベル検出 (format: "MM-DD HH:MM:SS.mmm PID TID LEVEL TAG: msg")
+function logcatLevel(line) {
+  const m = line.match(/^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ +\d+ +\d+ ([VDIWEF]) /);
+  if (!m) return "v";
+  return m[1].toLowerCase();
+}
+
 function ScanResult({ ip, onConnect }) {
   return (
     <div className="scan-result-row">
@@ -404,6 +411,18 @@ export default function App() {
   const [manualIp, setManualIp] = useState("");
   const [fileExplorerDevice, setFileExplorerDevice] = useState(null);
   const [installProgress, setInstallProgress] = useState(null); // { device, progress, phase }
+  const [termInput, setTermInput] = useState("");
+  const [termHistory, setTermHistory] = useState([]);
+  const [termDevice, setTermDevice] = useState("");
+  const termOutputRef = useRef(null);
+  const termInputRef = useRef(null);
+  const [bottomTab, setBottomTab] = useState("log"); // "log" | "terminal" | "logcat"
+  const [logcatLines, setLogcatLines] = useState([]);
+  const [logcatRunning, setLogcatRunning] = useState(false);
+  const [logcatDevice, setLogcatDevice] = useState("");
+  const [logcatFilter, setLogcatFilter] = useState("");
+  const logcatRef = useRef(null);
+  const MAX_LOGCAT_LINES = 500;
   const [installedPackages, setInstalledPackages] = useState(() => {
     try { return JSON.parse(localStorage.getItem("installedPackages") || "{}"); }
     catch { return {}; }
@@ -426,6 +445,22 @@ export default function App() {
       }
     }).then(fn => { unlisten = fn; });
     return () => { if (unlisten) unlisten(); };
+  }, []);
+
+  // logcatイベントリスナー
+  useEffect(() => {
+    let unlistenLine, unlistenStop;
+    listen("logcat_line", (e) => {
+      setLogcatLines((prev) => {
+        const next = [...prev, e.payload];
+        return next.length > MAX_LOGCAT_LINES ? next.slice(next.length - MAX_LOGCAT_LINES) : next;
+      });
+      setTimeout(() => {
+        if (logcatRef.current) logcatRef.current.scrollTop = logcatRef.current.scrollHeight;
+      }, 20);
+    }).then(fn => { unlistenLine = fn; });
+    listen("logcat_stopped", () => setLogcatRunning(false)).then(fn => { unlistenStop = fn; });
+    return () => { unlistenLine?.(); unlistenStop?.(); };
   }, []);
 
   const addLog = useCallback((msg, type = "info") => {
@@ -470,6 +505,7 @@ export default function App() {
 
   const handleEnableTcpip = async (device) => {
     setStatus(STATUS.TCPIP);
+    addLog(`$ adb -s ${device.address} tcpip 5555`, "cmd");
     addLog(`TCP/IP有効化中: ${device.address} (${device.model ?? "Unknown"})`);
     try {
       const result = await invoke("enable_tcpip", { device: device.address, port: 5555 });
@@ -494,6 +530,7 @@ export default function App() {
   const handleScan = async () => {
     setStatus(STATUS.SCANNING);
     setScanResults([]);
+    addLog("$ (TCP port 5555 scan on local subnet)", "cmd");
     addLog("ネットワークスキャン開始...");
     try {
       const found = await invoke("scan_network");
@@ -511,6 +548,7 @@ export default function App() {
   };
 
   const handleConnect = async (ip, port = 5555) => {
+    addLog(`$ adb connect ${ip}:${port}`, "cmd");
     addLog(`接続中: ${ip}:${port}`);
     try {
       const result = await invoke("connect_device", { ip, port });
@@ -527,6 +565,7 @@ export default function App() {
   };
 
   const handleDisconnect = async (address) => {
+    addLog(`$ adb disconnect ${address}`, "cmd");
     addLog(`切断: ${address}`);
     try {
       const result = await invoke("disconnect_device", { address });
@@ -586,6 +625,7 @@ export default function App() {
   const handleInstall = async (device) => {
     if (!apkPath) return;
     setStatus(STATUS.INSTALLING);
+    addLog(`$ adb -s ${device} install "${apkPath}"`, "cmd");
     addLog(`インストール中: ${apkPath} → ${device}`);
     try {
       const result = await invoke("install_apk", { device, apkPath });
@@ -607,6 +647,7 @@ export default function App() {
   };
 
   const handleLaunch = async (device, pkg) => {
+    addLog(`$ adb -s ${device} shell monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`, "cmd");
     addLog(`起動中: ${pkg}`);
     try {
       const result = await invoke("launch_app", { device, package: pkg });
@@ -617,6 +658,7 @@ export default function App() {
   };
 
   const handleIdentify = async (device) => {
+    addLog(`$ adb -s ${device} shell (brightness/flashlight/vibrator sequence)`, "cmd");
     addLog(`識別中: ${device}`);
     try {
       const result = await invoke("identify_device", { device });
@@ -628,6 +670,7 @@ export default function App() {
 
   const handleUninstall = async (device, pkg) => {
     if (!window.confirm(`アンインストールしますか?\n${pkg}`)) return;
+    addLog(`$ adb -s ${device} uninstall ${pkg}`, "cmd");
     addLog(`アンインストール中: ${pkg}`);
     try {
       const result = await invoke("uninstall_apk", { device, package: pkg });
@@ -643,6 +686,7 @@ export default function App() {
   };
 
   const handleRestartAdb = async () => {
+    addLog("$ adb kill-server && adb start-server", "cmd");
     addLog("adbサーバーリセット中...");
     try {
       const result = await invoke("restart_adb_server");
@@ -662,8 +706,42 @@ export default function App() {
     }
   };
 
+  const handleTermRun = async () => {
+    const cmd = termInput.trim();
+    if (!cmd) return;
+    const prefix = termDevice ? `adb -s ${termDevice}` : "adb";
+    addLog(`$ ${prefix} ${cmd}`, "cmd");
+    setTermInput("");
+    try {
+      const output = await invoke("run_terminal_command", { device: termDevice, command: cmd });
+      setTermHistory((prev) => [...prev, { cmd: `${prefix} ${cmd}`, output: output || "(出力なし)" }]);
+    } catch (e) {
+      setTermHistory((prev) => [...prev, { cmd: `${prefix} ${cmd}`, output: `エラー: ${e}` }]);
+    }
+    setTimeout(() => termOutputRef.current?.scrollTo(0, termOutputRef.current.scrollHeight), 50);
+  };
+
+  const handleLogcatStart = async () => {
+    if (!logcatDevice) return;
+    setLogcatLines([]);
+    setLogcatRunning(true);
+    addLog(`$ adb -s ${logcatDevice} logcat -v time ${logcatFilter}`, "cmd");
+    try {
+      await invoke("start_logcat", { device: logcatDevice, filter: logcatFilter });
+    } catch (e) {
+      addLog("logcat起動失敗: " + e, "error");
+      setLogcatRunning(false);
+    }
+  };
+
+  const handleLogcatStop = async () => {
+    await invoke("stop_logcat");
+    setLogcatRunning(false);
+  };
+
   const handlePair = async () => {
     setStatus(STATUS.PAIRING);
+    addLog(`$ adb pair ${pairForm.ip}:${pairForm.port}`, "cmd");
     addLog(`ペアリング: ${pairForm.ip}:${pairForm.port}`);
     try {
       const result = await invoke("pair_device", {
@@ -922,26 +1000,132 @@ export default function App() {
             )}
           </section>
 
-          {/* Log */}
-          <section className="section log-section">
-            <div className="section-header">
-              <h2 className="section-title">ログ</h2>
-              <button className="btn btn-ghost btn-sm" onClick={() => setLog([])}>
-                クリア
+          {/* Bottom tabs: Log / Terminal / Logcat */}
+          <section className="section bottom-tabs-section">
+            {/* Tab bar */}
+            <div className="bottom-tab-bar">
+              <button
+                className={`bottom-tab ${bottomTab === "log" ? "active" : ""}`}
+                onClick={() => setBottomTab("log")}
+              >
+                ログ
               </button>
+              <button
+                className={`bottom-tab ${bottomTab === "terminal" ? "active" : ""}`}
+                onClick={() => setBottomTab("terminal")}
+              >
+                ターミナル
+              </button>
+              <button
+                className={`bottom-tab ${bottomTab === "logcat" ? "active" : ""}`}
+                onClick={() => setBottomTab("logcat")}
+              >
+                Logcat {logcatRunning && <span className="logcat-dot" />}
+              </button>
+
+              {/* Tab-specific controls (right side) */}
+              <div className="bottom-tab-actions">
+                {bottomTab === "log" && (
+                  <button className="btn btn-ghost btn-sm" onClick={() => setLog([])}>クリア</button>
+                )}
+                {bottomTab === "terminal" && (
+                  <>
+                    <select className="input input-sm" value={termDevice} onChange={(e) => setTermDevice(e.target.value)} style={{ maxWidth: 180 }}>
+                      <option value="">デバイスを選択</option>
+                      {[...devices, ...usbDevices].map((d) => (
+                        <option key={d.address} value={d.address}>{d.address} {d.model ? `(${d.model})` : ""}</option>
+                      ))}
+                    </select>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setTermHistory([])}>クリア</button>
+                  </>
+                )}
+                {bottomTab === "logcat" && (
+                  <>
+                    <select className="input input-sm" value={logcatDevice} onChange={(e) => setLogcatDevice(e.target.value)} style={{ maxWidth: 160 }}>
+                      <option value="">デバイスを選択</option>
+                      {[...devices, ...usbDevices].map((d) => (
+                        <option key={d.address} value={d.address}>{d.address} {d.model ? `(${d.model})` : ""}</option>
+                      ))}
+                    </select>
+                    <input
+                      className="input input-sm"
+                      style={{ maxWidth: 130 }}
+                      placeholder="*:W MyTag:D"
+                      value={logcatFilter}
+                      onChange={(e) => setLogcatFilter(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter" && !logcatRunning) handleLogcatStart(); }}
+                    />
+                    {!logcatRunning ? (
+                      <button className="btn btn-primary btn-sm" onClick={handleLogcatStart} disabled={!logcatDevice}>▶ 開始</button>
+                    ) : (
+                      <button className="btn btn-danger btn-sm" onClick={handleLogcatStop}>■ 停止</button>
+                    )}
+                    <button className="btn btn-ghost btn-sm" onClick={() => setLogcatLines([])}>クリア</button>
+                  </>
+                )}
+              </div>
             </div>
-            <div className="log-area">
-              {log.length === 0 ? (
-                <div className="log-empty">ログなし</div>
-              ) : (
-                [...log].reverse().map((entry, i) => (
-                  <div key={i} className={`log-entry log-${entry.type}`}>
-                    <span className="log-time">{entry.time}</span>
-                    <span className="log-msg">{entry.msg}</span>
+
+            {/* Tab content */}
+            {bottomTab === "log" && (
+              <div className="log-area">
+                {log.length === 0 ? (
+                  <div className="log-empty">ログなし</div>
+                ) : (
+                  [...log].reverse().map((entry, i) => (
+                    <div key={i} className={`log-entry log-${entry.type}`}>
+                      <span className="log-time">{entry.time}</span>
+                      <span className="log-msg">{entry.msg}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+
+            {bottomTab === "terminal" && (
+              <>
+                <div className="terminal-output" ref={termOutputRef}>
+                  {termHistory.length === 0 ? (
+                    <div className="terminal-empty">コマンドを入力してください</div>
+                  ) : (
+                    termHistory.map((h, i) => (
+                      <div key={i} className="terminal-entry">
+                        <div className="terminal-cmd">$ {h.cmd}</div>
+                        <pre className="terminal-result">{h.output}</pre>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="terminal-input-row">
+                  <span className="terminal-prompt">$</span>
+                  <input
+                    ref={termInputRef}
+                    className="input terminal-input"
+                    placeholder="devices / connect 192.168.x.x:5555 / shell ls /sdcard ..."
+                    value={termInput}
+                    onChange={(e) => setTermInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleTermRun(); }}
+                  />
+                  <button className="btn btn-primary btn-sm" onClick={handleTermRun} disabled={!termInput.trim()}>
+                    実行
+                  </button>
+                </div>
+              </>
+            )}
+
+            {bottomTab === "logcat" && (
+              <div className="logcat-output" ref={logcatRef}>
+                {logcatLines.length === 0 ? (
+                  <div className="terminal-empty">
+                    {logcatRunning ? "ログ待機中..." : "デバイスを選択して ▶ 開始"}
                   </div>
-                ))
-              )}
-            </div>
+                ) : (
+                  logcatLines.map((line, i) => (
+                    <div key={i} className={`logcat-line logcat-${logcatLevel(line)}`}>{line}</div>
+                  ))
+                )}
+              </div>
+            )}
           </section>
         </div>
       </div>

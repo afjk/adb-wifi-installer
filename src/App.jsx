@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./App.css";
 
@@ -196,7 +197,6 @@ function FileExplorer({ device, onClose }) {
       setStatus("動画を取得中...");
       try {
         const localPath = await invoke("pull_to_tmp", { device, remotePath: file.path });
-        const { open: openPath } = await import("@tauri-apps/plugin-opener");
         await openPath(localPath);
         setStatus("✅ 外部アプリで開きました");
       } catch (e) {
@@ -214,7 +214,7 @@ function FileExplorer({ device, onClose }) {
   };
 
   const handleDownload = async (file) => {
-    setStatus("ダウンロード中: " + file.name);
+    setStatus((file.is_dir ? "📁 フォルダをダウンロード中: " : "ダウンロード中: ") + file.name);
     try {
       const msg = await invoke("pull_file", { device, remotePath: file.path });
       setStatus("✅ " + msg);
@@ -327,10 +327,10 @@ function FileExplorer({ device, onClose }) {
                 <span className="fe-date">{f.modified || ""}</span>
                 <div className="fe-actions">
                   {!f.is_dir && !f.is_symlink && (
-                    <>
-                      <button className="btn btn-ghost btn-xs" onClick={() => handlePreview(f)} title="プレビュー">👁</button>
-                      <button className="btn btn-ghost btn-xs" onClick={() => handleDownload(f)} title="ダウンロード">⬇</button>
-                    </>
+                    <button className="btn btn-ghost btn-xs" onClick={() => handlePreview(f)} title="プレビュー">👁</button>
+                  )}
+                  {!f.is_symlink && (
+                    <button className="btn btn-ghost btn-xs" onClick={() => handleDownload(f)} title="ダウンロード">⬇</button>
                   )}
                   <button className="btn btn-ghost btn-xs" style={{color:"#f87171"}} onClick={() => handleDelete(f)} title="削除">🗑</button>
                 </div>

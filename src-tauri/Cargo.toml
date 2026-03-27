@@ -1,6 +1,6 @@
 [package]
 name = "adb-wifi-installer"
-version = "0.1.0"
+version = "0.2.0"
 description = "ADB WiFi Installer - Manage Android devices over WiFi"
 authors = ["AKIHIRO FUJII"]
 edition = "2021"

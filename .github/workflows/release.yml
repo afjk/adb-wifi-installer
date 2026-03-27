@@ -29,13 +29,24 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
-      - name: Build and upload to Release
-        uses: tauri-apps/tauri-action@v0
+      - name: Build
+        run: npm run tauri build -- --target x86_64-pc-windows-msvc
+
+      - name: Upload MSI to Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: ${{ github.ref_name }}
-          releaseDraft: false
-          prerelease: false
-          args: --target x86_64-pc-windows-msvc
+        shell: bash
+        run: |
+          TAG=${{ github.ref_name }}
+          MSI=$(find src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi -name "*.msi" | head -1)
+          NSIS=$(find src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -name "*-setup.exe" | head -1)
+
+          # Create release if it doesn't exist
+          gh release view "$TAG" || gh release create "$TAG" --title "$TAG" --notes "Windows build"
+
+          if [ -n "$MSI" ]; then
+            gh release upload "$TAG" "$MSI" --clobber
+          fi
+          if [ -n "$NSIS" ]; then
+            gh release upload "$TAG" "$NSIS" --clobber
+          fi

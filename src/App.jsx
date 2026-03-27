@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -402,6 +403,7 @@ export default function App() {
   const [pairForm, setPairForm] = useState({ ip: "", port: "37000", code: "" });
   const [manualIp, setManualIp] = useState("");
   const [fileExplorerDevice, setFileExplorerDevice] = useState(null);
+  const [installProgress, setInstallProgress] = useState(null); // { device, progress, phase }
   const [installedPackages, setInstalledPackages] = useState(() => {
     try { return JSON.parse(localStorage.getItem("installedPackages") || "{}"); }
     catch { return {}; }
@@ -411,6 +413,20 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("installedPackages", JSON.stringify(installedPackages));
   }, [installedPackages]);
+
+  // インストール進捗イベントのリスナー
+  useEffect(() => {
+    let unlisten;
+    listen("install_progress", (e) => {
+      const { device, progress, phase } = e.payload;
+      if (phase === "done") {
+        setInstallProgress(null);
+      } else {
+        setInstallProgress({ device, progress, phase });
+      }
+    }).then(fn => { unlisten = fn; });
+    return () => { if (unlisten) unlisten(); };
+  }, []);
 
   const addLog = useCallback((msg, type = "info") => {
     const time = new Date().toLocaleTimeString();
@@ -861,7 +877,25 @@ export default function App() {
             </div>
 
             {status === STATUS.INSTALLING && (
-              <div className="installing-banner">インストール中...</div>
+              <div className="installing-banner">
+                {installProgress ? (
+                  <>
+                    <div className="install-phase-label">
+                      {installProgress.phase === "uploading"
+                        ? `アップロード中... ${installProgress.progress}%`
+                        : "インストール中..."}
+                    </div>
+                    <div className="install-progress-bar-bg">
+                      <div
+                        className="install-progress-bar-fill"
+                        style={{ width: `${installProgress.progress}%` }}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  "インストール中..."
+                )}
+              </div>
             )}
 
             {devices.length === 0 ? (

@@ -1,10 +1,12 @@
+use std::io::{BufRead, BufReader};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tauri::Emitter;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Device {
@@ -364,27 +366,97 @@ fn get_package_list(adb: &str, device: &str) -> std::collections::HashSet<String
         .collect()
 }
 
+fn parse_adb_push_progress(line: &str) -> Option<u8> {
+    // adb push outputs: "[  2%] /data/local/tmp/..."
+    let line = line.trim();
+    if line.starts_with('[') {
+        if let Some(pct_pos) = line.find('%') {
+            let num_str = line[1..pct_pos].trim();
+            return num_str.parse::<u8>().ok().map(|n| n.min(99));
+        }
+    }
+    None
+}
+
 #[tauri::command]
-async fn install_apk(device: String, apk_path: String) -> Result<InstallResult, String> {
+async fn install_apk(app: tauri::AppHandle, device: String, apk_path: String) -> Result<InstallResult, String> {
     let adb = get_adb_path();
     let before = get_package_list(&adb, &device);
+    let remote_path = "/data/local/tmp/_adbui_install.apk";
+
+    // Phase 1: push APK to device with progress events
+    let _ = app.emit("install_progress", serde_json::json!({
+        "device": &device, "progress": 0, "phase": "uploading"
+    }));
+
+    {
+        let adb2 = adb.clone();
+        let device2 = device.clone();
+        let apk2 = apk_path.clone();
+        let app2 = app.clone();
+        let dev2 = device.clone();
+
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut child = Command::new(&adb2)
+                .args(["-s", &device2, "push", &apk2, remote_path])
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| e.to_string())?;
+
+            if let Some(stderr) = child.stderr.take() {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().flatten() {
+                    if let Some(pct) = parse_adb_push_progress(&line) {
+                        let _ = app2.emit("install_progress", serde_json::json!({
+                            "device": &dev2, "progress": pct, "phase": "uploading"
+                        }));
+                    }
+                }
+            }
+
+            let status = child.wait().map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err("アップロード失敗".to_string());
+            }
+            Ok::<(), String>(())
+        }).await.map_err(|e| e.to_string())??;
+    }
+
+    // Phase 2: install from device storage
+    let _ = app.emit("install_progress", serde_json::json!({
+        "device": &device, "progress": 100, "phase": "installing"
+    }));
 
     let output = Command::new(&adb)
-        .args(["-s", &device, "install", "-r", &apk_path])
+        .args(["-s", &device, "shell", "pm", "install", "-r", remote_path])
         .output()
         .map_err(|e| e.to_string())?;
+
+    // Cleanup temp file
+    let _ = Command::new(&adb)
+        .args(["-s", &device, "shell", "rm", "-f", remote_path])
+        .output();
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
-    if !stdout.contains("Success") {
+    let success_msg = if stdout.contains("Success") {
+        stdout
+    } else if stderr.contains("Success") {
+        stderr
+    } else {
         return Err(if !stderr.is_empty() { stderr } else { stdout });
-    }
+    };
 
     let after = get_package_list(&adb, &device);
     let package = after.difference(&before).next().cloned();
 
-    Ok(InstallResult { message: stdout, package })
+    let _ = app.emit("install_progress", serde_json::json!({
+        "device": &device, "progress": 100, "phase": "done"
+    }));
+
+    Ok(InstallResult { message: success_msg, package })
 }
 
 #[tauri::command]

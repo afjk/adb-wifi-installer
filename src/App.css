@@ -330,11 +330,12 @@ body {
 .device-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--bg-card);
+  overflow: hidden;
 }
 
 .device-row.connected {
@@ -346,6 +347,8 @@ body {
   align-items: center;
   gap: 10px;
   overflow: hidden;
+  flex: 1;
+  min-width: 0;
 }
 
 .device-address {
@@ -400,8 +403,9 @@ body {
 
 .device-actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 /* Log */
@@ -594,7 +598,7 @@ body {
 }
 
 .pkg-input:focus {
-  border-color: var(--accent);
+  border-color: var(--primary);
 }
 
 /* Input */
@@ -691,7 +695,7 @@ body {
 }
 
 .file-explorer {
-  background: var(--surface);
+  background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 10px;
   width: 90vw; max-width: 1100px;
@@ -704,7 +708,7 @@ body {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
-  background: var(--surface2);
+  background: var(--bg-card);
 }
 .fe-title { font-weight: 600; font-size: 13px; }
 .fe-header-actions { display: flex; gap: 6px; }
@@ -716,9 +720,19 @@ body {
   border-bottom: 1px solid var(--border);
   display: flex; flex-wrap: wrap; gap: 2px;
 }
-.fe-bc-item { color: var(--accent); cursor: pointer; }
+.fe-bc-item { color: var(--primary); cursor: pointer; }
 .fe-bc-item:hover { text-decoration: underline; }
 .fe-bc-sep { color: var(--text-muted); }
+.fe-bc-hint { color: var(--text-muted); margin-left: 6px; font-size: 10px; opacity: 0.5; }
+.fe-breadcrumb { cursor: text; }
+.fe-path-input {
+  flex: 1; width: 100%;
+  background: transparent;
+  border: none; outline: none;
+  color: var(--primary);
+  font-family: monospace; font-size: 11px;
+  padding: 0;
+}
 
 .fe-body {
   display: flex; flex: 1; overflow: hidden;
@@ -756,7 +770,7 @@ body {
 .fe-preview-header {
   display: flex; align-items: center; justify-content: space-between; gap: 6px;
   padding: 8px 10px;
-  background: var(--surface2);
+  background: var(--bg-card);
   border-bottom: 1px solid var(--border);
   font-size: 11px; font-weight: 600;
 }
@@ -779,10 +793,13 @@ body {
 
 .fe-status {
   padding: 6px 14px; font-size: 11px;
-  background: var(--surface2);
+  background: var(--bg-card);
   border-top: 1px solid var(--border);
   color: var(--text-muted);
 }
+
+.fe-symlink .fe-name { color: #a78bfa; font-style: italic; }
+.fe-row.fe-selected { background: rgba(79,142,247,0.12); border-left: 2px solid var(--primary); }
 
 .btn-files {
   background: rgba(100, 200, 255, 0.1);

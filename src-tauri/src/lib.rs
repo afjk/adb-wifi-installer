@@ -525,6 +525,8 @@ pub struct FileEntry {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
+    pub is_symlink: bool,
+    pub symlink_target: Option<String>,
     pub size: Option<u64>,
     pub modified: Option<String>,
     pub permissions: Option<String>,
@@ -538,19 +540,45 @@ async fn list_files(device: String, path: String) -> Result<Vec<FileEntry>, Stri
     for line in raw.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with("total") { continue; }
-        let parts: Vec<&str> = line.splitn(9, ' ').filter(|s| !s.is_empty()).collect();
+
+        // split_whitespace で列間の複数スペースを正しく処理
+        let parts: Vec<&str> = line.split_whitespace().collect();
         // 最低8フィールド: perms links user group size date time name
         if parts.len() < 8 { continue; }
+
         let perms = parts[0];
-        let is_dir = perms.starts_with('d') || perms.starts_with('l');
+        let is_dir     = perms.starts_with('d');
+        let is_symlink = perms.starts_with('l');
         let size: Option<u64> = parts[4].parse().ok();
-        let modified = if parts.len() >= 7 {
-            Some(format!("{} {}", parts[5], parts[6]))
-        } else { None };
-        let name = parts.last().unwrap_or(&"").to_string();
-        if name == "." || name == ".." { continue; }
-        // symlink: "name -> target" → nameだけ取る
-        let name = name.split(" -> ").next().unwrap_or(&name).to_string();
+        let modified = Some(format!("{} {}", parts[5], parts[6]));
+
+        // Android によっては日時後にタイムゾーン (+0000/-0800) が入る
+        // 形式: perms links user group size date time [tz] name...
+        let name_start = if parts.len() >= 9 {
+            let tz = parts[7];
+            let is_tz = tz.len() == 5
+                && (tz.starts_with('+') || tz.starts_with('-'))
+                && tz[1..].chars().all(|c| c.is_ascii_digit());
+            if is_tz { 8 } else { 7 }
+        } else {
+            7
+        };
+
+        if name_start >= parts.len() { continue; }
+        let raw_name = parts[name_start..].join(" ");
+        if raw_name == "." || raw_name == ".." { continue; }
+
+        // symlink: "name -> target" → name と target を分離
+        let (name, symlink_target) = if is_symlink {
+            if let Some((n, t)) = raw_name.split_once(" -> ") {
+                (n.trim().to_string(), Some(t.trim().to_string()))
+            } else {
+                (raw_name.clone(), None)
+            }
+        } else {
+            (raw_name.clone(), None)
+        };
+
         let full_path = if path.ends_with('/') {
             format!("{}{}", path, name)
         } else {
@@ -560,6 +588,8 @@ async fn list_files(device: String, path: String) -> Result<Vec<FileEntry>, Stri
             name,
             path: full_path,
             is_dir,
+            is_symlink,
+            symlink_target,
             size,
             modified,
             permissions: Some(perms.to_string()),
@@ -568,6 +598,58 @@ async fn list_files(device: String, path: String) -> Result<Vec<FileEntry>, Stri
     // ディレクトリ先、名前順
     entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
     Ok(entries)
+}
+
+#[tauri::command]
+async fn delete_path(device: String, path: String) -> Result<String, String> {
+    let adb = get_adb_path();
+    let output = Command::new(&adb)
+        .args(["-s", &device, "shell", "rm", "-rf", &path])
+        .output()
+        .map_err(|e| e.to_string())?;
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if output.status.success() || stderr.is_empty() {
+        Ok(format!("削除完了: {}", path))
+    } else {
+        Err(stderr)
+    }
+}
+
+/// 複数ファイルをまとめてアップロード
+#[tauri::command]
+async fn push_files(device: String, local_paths: Vec<String>, remote_dir: String) -> Result<String, String> {
+    let adb = get_adb_path();
+    let mut args = vec!["-s".to_string(), device, "push".to_string()];
+    let count = local_paths.len();
+    args.extend(local_paths);
+    args.push(remote_dir);
+    let output = Command::new(&adb)
+        .args(&args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if output.status.success() {
+        Ok(format!("アップロード完了: {} ファイル", count))
+    } else {
+        Err(stderr)
+    }
+}
+
+/// 動画等をtempに引き出してローカルパスを返す（外部アプリで開くため）
+#[tauri::command]
+async fn pull_to_tmp(device: String, remote_path: String) -> Result<String, String> {
+    let adb = get_adb_path();
+    let file_name = remote_path.rsplit('/').next().unwrap_or("file").to_string();
+    let tmp = std::env::temp_dir().join(&file_name);
+    let output = Command::new(&adb)
+        .args(["-s", &device, "pull", &remote_path, tmp.to_str().unwrap()])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok(tmp.to_string_lossy().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
 }
 
 #[tauri::command]
@@ -947,8 +1029,11 @@ pub fn run() {
             identify_device,
             restart_adb_server,
             list_files,
+            delete_path,
             pull_file,
+            pull_to_tmp,
             push_file,
+            push_files,
             preview_file,
             pair_device,
             get_adb_version,

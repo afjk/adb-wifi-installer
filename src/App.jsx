@@ -82,7 +82,7 @@ function DeviceRow({ device, onConnect, onDisconnect, onInstall, onUninstall, on
                     onClick={() => { setPkgInput(""); setEditingPkg(true); }}
                     title="パッケージ名を入力して起動"
                   >
-                    パッケージ入力
+                    pkg
                   </button>
                 )}
                 {installedPackage && (
@@ -138,24 +138,40 @@ function DeviceRow({ device, onConnect, onDisconnect, onInstall, onUninstall, on
 }
 
 function FileExplorer({ device, onClose }) {
-  const [path, setPath] = useState("/sdcard");
+  const [path, setPath] = useState("/storage/emulated/0");
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState(null);
   const [status, setStatus] = useState("");
+  const [editingPath, setEditingPath] = useState(false);
+  const [pathInput, setPathInput] = useState("/storage/emulated/0");
+  const pathInputRef = useRef(null);
 
   const load = async (p) => {
     setLoading(true);
     setPreview(null);
+    setEditingPath(false);
     try {
       const entries = await invoke("list_files", { device, path: p });
       setFiles(entries);
       setPath(p);
+      setPathInput(p);
     } catch (e) {
       setStatus("エラー: " + e);
     } finally {
       setLoading(false);
     }
+  };
+
+  const startEditPath = () => {
+    setPathInput(path);
+    setEditingPath(true);
+    setTimeout(() => pathInputRef.current?.select(), 50);
+  };
+
+  const submitPath = () => {
+    const p = pathInput.trim() || "/";
+    load(p);
   };
 
   useEffect(() => { load(path); }, []);
@@ -169,10 +185,25 @@ function FileExplorer({ device, onClose }) {
 
   const handleClick = (file) => {
     if (file.is_dir) { load(file.path); return; }
+    if (file.is_symlink && file.symlink_target) { load(file.symlink_target); return; }
     handlePreview(file);
   };
 
   const handlePreview = async (file) => {
+    const ext = file.name.split(".").pop().toLowerCase();
+    const isVideo = ["mp4","mov","avi","mkv","webm"].includes(ext);
+    if (isVideo) {
+      setStatus("動画を取得中...");
+      try {
+        const localPath = await invoke("pull_to_tmp", { device, remotePath: file.path });
+        const { open: openPath } = await import("@tauri-apps/plugin-opener");
+        await openPath(localPath);
+        setStatus("✅ 外部アプリで開きました");
+      } catch (e) {
+        setStatus("❌ " + e);
+      }
+      return;
+    }
     setPreview({ loading: true, name: file.name });
     try {
       const result = await invoke("preview_file", { device, remotePath: file.path });
@@ -194,11 +225,24 @@ function FileExplorer({ device, onClose }) {
 
   const handleUpload = async () => {
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const selected = await open({ multiple: false });
+    const selected = await open({ multiple: true });
     if (!selected) return;
-    setStatus("アップロード中...");
+    const paths = Array.isArray(selected) ? selected : [selected];
+    setStatus(`アップロード中... (${paths.length} ファイル)`);
     try {
-      const msg = await invoke("push_file", { device, localPath: selected, remoteDir: path });
+      const msg = await invoke("push_files", { device, localPaths: paths, remoteDir: path });
+      setStatus("✅ " + msg);
+      load(path);
+    } catch (e) {
+      setStatus("❌ " + e);
+    }
+  };
+
+  const handleDelete = async (file) => {
+    if (!window.confirm(`削除しますか?\n${file.path}`)) return;
+    setStatus("削除中: " + file.name);
+    try {
+      const msg = await invoke("delete_path", { device, path: file.path });
       setStatus("✅ " + msg);
       load(path);
     } catch (e) {
@@ -234,15 +278,33 @@ function FileExplorer({ device, onClose }) {
           </div>
         </div>
 
-        {/* パンくず */}
-        <div className="fe-breadcrumb">
-          <span className="fe-bc-item" onClick={() => load("/")}>/ </span>
-          {breadcrumbs.map((crumb, i) => (
-            <span key={i}>
-              <span className="fe-bc-item" onClick={() => navigateTo(i)}>{crumb}</span>
-              {i < breadcrumbs.length - 1 && <span className="fe-bc-sep">/</span>}
-            </span>
-          ))}
+        {/* パンくず / パス入力 */}
+        <div className="fe-breadcrumb" onClick={!editingPath ? startEditPath : undefined} title="クリックでパスを編集">
+          {editingPath ? (
+            <input
+              ref={pathInputRef}
+              className="fe-path-input"
+              value={pathInput}
+              onChange={e => setPathInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter") submitPath();
+                if (e.key === "Escape") setEditingPath(false);
+              }}
+              onBlur={() => setTimeout(() => setEditingPath(false), 150)}
+              autoFocus
+            />
+          ) : (
+            <>
+              <span className="fe-bc-item" onClick={e => { e.stopPropagation(); load("/"); }}>/ </span>
+              {breadcrumbs.map((crumb, i) => (
+                <span key={i}>
+                  <span className="fe-bc-item" onClick={e => { e.stopPropagation(); navigateTo(i); }}>{crumb}</span>
+                  {i < breadcrumbs.length - 1 && <span className="fe-bc-sep">/</span>}
+                </span>
+              ))}
+              <span className="fe-bc-hint">✎</span>
+            </>
+          )}
         </div>
 
         <div className="fe-body">
@@ -256,19 +318,22 @@ function FileExplorer({ device, onClose }) {
             )}
             {loading && <div className="fe-loading">読み込み中...</div>}
             {!loading && files.map((f, i) => (
-              <div key={i} className={`fe-row ${f.is_dir ? "fe-dir" : "fe-file"}`}>
+              <div key={i} className={`fe-row ${f.is_dir ? "fe-dir" : f.is_symlink ? "fe-symlink" : "fe-file"}`}>
                 <span className="fe-icon" onClick={() => handleClick(f)}>
-                  {f.is_dir ? "📁" : getFileIcon(f.name)}
+                  {f.is_symlink ? "🔗" : f.is_dir ? "📁" : getFileIcon(f.name)}
                 </span>
                 <span className="fe-name" onClick={() => handleClick(f)} title={f.path}>{f.name}</span>
-                <span className="fe-size">{formatSize(f.size)}</span>
+                <span className="fe-size">{!f.is_dir ? formatSize(f.size) : ""}</span>
                 <span className="fe-date">{f.modified || ""}</span>
-                {!f.is_dir && (
-                  <div className="fe-actions">
-                    <button className="btn btn-ghost btn-xs" onClick={() => handlePreview(f)} title="プレビュー">👁</button>
-                    <button className="btn btn-ghost btn-xs" onClick={() => handleDownload(f)} title="ダウンロード">⬇</button>
-                  </div>
-                )}
+                <div className="fe-actions">
+                  {!f.is_dir && !f.is_symlink && (
+                    <>
+                      <button className="btn btn-ghost btn-xs" onClick={() => handlePreview(f)} title="プレビュー">👁</button>
+                      <button className="btn btn-ghost btn-xs" onClick={() => handleDownload(f)} title="ダウンロード">⬇</button>
+                    </>
+                  )}
+                  <button className="btn btn-ghost btn-xs" style={{color:"#f87171"}} onClick={() => handleDelete(f)} title="削除">🗑</button>
+                </div>
               </div>
             ))}
           </div>

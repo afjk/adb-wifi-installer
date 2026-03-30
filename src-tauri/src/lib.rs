@@ -1272,3 +1272,71 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_device_type_vr() {
+        assert_eq!(detect_device_type("Pico", "A3"), "vr");
+        assert_eq!(detect_device_type("Meta", "Quest 3"), "vr");
+        assert_eq!(detect_device_type("Oculus", "Go"), "vr");
+        assert_eq!(detect_device_type("Unknown", "pico neo"), "vr");
+        assert_eq!(detect_device_type("Unknown", "quest 2"), "vr");
+    }
+
+    #[test]
+    fn test_detect_device_type_tv() {
+        assert_eq!(detect_device_type("Google", "ADT-3"), "tv");
+    }
+
+    #[test]
+    fn test_detect_device_type_tablet() {
+        assert_eq!(detect_device_type("Samsung", "SM-T870"), "tablet");
+        assert_eq!(detect_device_type("Xiaomi", "Pad 6"), "tablet");
+        assert_eq!(detect_device_type("Lenovo", "Tab P12"), "tablet");
+    }
+
+    #[test]
+    fn test_detect_device_type_phone() {
+        assert_eq!(detect_device_type("Samsung", "Galaxy S24"), "phone");
+        assert_eq!(detect_device_type("Google", "Pixel 8"), "phone");
+        assert_eq!(detect_device_type("OnePlus", "12R"), "phone");
+    }
+
+    #[test]
+    fn test_parse_battery_from_dumpsys() {
+        // Simulate parsing battery info line by line
+        let output = "  level: 85\n  status: 2\n";
+        let mut level: Option<u8> = None;
+        let mut charging: Option<bool> = None;
+        for line in output.lines() {
+            let line = line.trim();
+            if let Some(v) = line.strip_prefix("level:") {
+                level = v.trim().parse().ok();
+            } else if let Some(v) = line.strip_prefix("status:") {
+                charging = v.trim().parse::<u8>().ok().map(|s| s == 2 || s == 5);
+            }
+        }
+        assert_eq!(level, Some(85));
+        assert_eq!(charging, Some(true));
+    }
+
+    #[test]
+    fn test_parse_battery_not_charging() {
+        let output = "  level: 42\n  status: 3\n";
+        let mut level: Option<u8> = None;
+        let mut charging: Option<bool> = None;
+        for line in output.lines() {
+            let line = line.trim();
+            if let Some(v) = line.strip_prefix("level:") {
+                level = v.trim().parse().ok();
+            } else if let Some(v) = line.strip_prefix("status:") {
+                charging = v.trim().parse::<u8>().ok().map(|s| s == 2 || s == 5);
+            }
+        }
+        assert_eq!(level, Some(42));
+        assert_eq!(charging, Some(false));
+    }
+}

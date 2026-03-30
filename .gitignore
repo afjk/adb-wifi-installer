@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Puppeteer downloaded browser
+chrome/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

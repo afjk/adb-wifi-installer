@@ -1064,6 +1064,55 @@ async fn get_device_wifi_ip(device: String) -> Result<String, String> {
     Err("WiFi IPが見つかりません。AndroidのWiFi接続を確認してください。".to_string())
 }
 
+fn get_scrcpy_path() -> Option<String> {
+    // macOS Homebrew / Linux common paths
+    let candidates = [
+        "/opt/homebrew/bin/scrcpy",
+        "/usr/local/bin/scrcpy",
+        "/usr/bin/scrcpy",
+    ];
+    for c in &candidates {
+        if std::path::Path::new(c).exists() {
+            return Some(c.to_string());
+        }
+    }
+    // Fallback: try PATH
+    let which_cmd = if cfg!(windows) { "where" } else { "which" };
+    if let Ok(out) = Command::new(which_cmd).arg("scrcpy").output() {
+        if out.status.success() {
+            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !p.is_empty() { return Some(p); }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+async fn launch_scrcpy(device: String, extra_args: Option<String>) -> Result<String, String> {
+    let scrcpy = get_scrcpy_path()
+        .ok_or_else(|| "scrcpy が見つかりません。brew install scrcpy でインストールしてください".to_string())?;
+
+    let mut cmd = Command::new(&scrcpy);
+    if !device.is_empty() {
+        cmd.args(["-s", &device]);
+    }
+    if let Some(args) = extra_args {
+        for arg in args.split_whitespace() {
+            cmd.arg(arg);
+        }
+    }
+
+    cmd.spawn().map_err(|e| e.to_string())?;
+    Ok("scrcpy を起動しました".to_string())
+}
+
+#[tauri::command]
+async fn get_scrcpy_version() -> Result<String, String> {
+    let scrcpy = get_scrcpy_path().ok_or_else(|| "not found".to_string())?;
+    let out = Command::new(&scrcpy).arg("--version").output().map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("unknown").to_string())
+}
+
 #[tauri::command]
 async fn get_adb_version() -> Result<String, String> {
     let adb = get_adb_path();
@@ -1214,6 +1263,8 @@ pub fn run() {
             preview_file,
             pair_device,
             get_adb_version,
+            launch_scrcpy,
+            get_scrcpy_version,
             run_terminal_command,
             start_logcat,
             stop_logcat,

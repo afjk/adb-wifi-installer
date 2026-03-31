@@ -72,11 +72,21 @@ echo "📎 Staple中..."
 xcrun stapler staple "$DMG_PATH"
 xcrun stapler staple "$APP_PATH"
 
-# --- Tauri署名（updater用） ---
+# --- .app.tar.gz 作成（updater用）---
 echo ""
-echo "✍️  Tauri署名（updater用）..."
-npm run tauri signer sign -- "$DMG_PATH" \
+echo "📦 .app.tar.gz 作成中（updater用）..."
+TARBALL_NAME="ADB WiFi Installer_${VERSION}_aarch64.app.tar.gz"
+TARBALL_PATH="$DMG_DIR/$TARBALL_NAME"
+cd "$(dirname "$APP_PATH")"
+tar czf "$OLDPWD/$TARBALL_PATH" "$(basename "$APP_PATH")"
+cd - > /dev/null
+
+# --- .app.tar.gz に Tauri署名（updater用）---
+echo ""
+echo "✍️  .app.tar.gz Tauri署名（updater用）..."
+npm run tauri signer sign -- "$TARBALL_PATH" \
   --private-key "$TAURI_PRIVATE_KEY" --password ""
+TARBALL_SIG_PATH="${TARBALL_PATH}.sig"
 
 # --- GitHub Releaseにアップロード ---
 TAG="v${VERSION}"
@@ -85,15 +95,17 @@ echo "☁️  GitHub Release ($TAG) にアップロード中..."
 gh release view "$TAG" 2>/dev/null || gh release create "$TAG" --title "$TAG" --notes "Release $TAG"
 gh release upload "$TAG" "$DMG_PATH" --clobber
 echo "Uploaded: $DMG_NAME"
+gh release upload "$TAG" "$TARBALL_PATH" --clobber
+echo "Uploaded: $TARBALL_NAME"
 
 # --- latest.jsonにmacOSエントリを追加 ---
 echo ""
 echo "📋 latest.json を更新中..."
-DMG_FILENAME="$DMG_NAME"
-DMG_URL="https://github.com/afjk/adb-wifi-installer/releases/download/${TAG}/${DMG_FILENAME// /%20}"
+TARBALL_FILENAME="$TARBALL_NAME"
+TARBALL_URL="https://github.com/afjk/adb-wifi-installer/releases/download/${TAG}/${TARBALL_FILENAME// /%20}"
 SIG_CONTENT=""
-if [ -f "$SIG_PATH" ]; then
-  SIG_CONTENT=$(cat "$SIG_PATH")
+if [ -f "$TARBALL_SIG_PATH" ]; then
+  SIG_CONTENT=$(cat "$TARBALL_SIG_PATH")
 fi
 
 # 既存のlatest.jsonを取得、なければ新規作成
@@ -103,21 +115,23 @@ else
   echo '{"version":"'"$VERSION"'","notes":"Release '"$TAG"'","pub_date":"'"$(date -u +"%Y-%m-%dT%H:%M:%SZ")"'","platforms":{}}' > /tmp/latest_current.json
 fi
 
-# macOSエントリを追加
-SIG_CONTENT="$SIG_CONTENT" DMG_URL="$DMG_URL" node -e "
+# macOSエントリを追加（updaterは .app.tar.gz が必要）
+SIG_CONTENT="$SIG_CONTENT" TARBALL_URL="$TARBALL_URL" node -e "
 const fs = require('fs');
 const data = JSON.parse(fs.readFileSync('/tmp/latest_current.json', 'utf8'));
 data.platforms['darwin-aarch64'] = {
   signature: process.env.SIG_CONTENT || '',
-  url: process.env.DMG_URL
+  url: process.env.TARBALL_URL
 };
 fs.writeFileSync('/tmp/latest_updated.json', JSON.stringify(data, null, 2));
 console.log('Updated platforms:', Object.keys(data.platforms).join(', '));
 "
 
-gh release upload "$TAG" /tmp/latest_updated.json --clobber --name latest.json
-echo "Updated latest.json with darwin-aarch64"
+cp /tmp/latest_updated.json /tmp/latest.json
+gh release upload "$TAG" /tmp/latest.json --clobber
+echo "Updated latest.json with darwin-aarch64 (.app.tar.gz)"
 
 echo ""
 echo "✅ 完了！"
-echo "   $DMG_PATH"
+echo "   DMG:     $DMG_PATH"
+echo "   Updater: $TARBALL_PATH"

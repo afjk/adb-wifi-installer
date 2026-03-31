@@ -30,23 +30,55 @@ jobs:
         run: npm install
 
       - name: Build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis
 
-      - name: Upload installer to Release
+      - name: Upload installer and update manifest to Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           TAG=${{ github.ref_name }}
-          NSIS=$(find src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -name "*-setup.exe" 2>/dev/null | head -1)
+          VERSION=${TAG#v}
+          BUNDLE_DIR="src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
+
+          NSIS=$(find "$BUNDLE_DIR/nsis" -name "*-setup.exe" 2>/dev/null | head -1)
+          SIG=$(find "$BUNDLE_DIR/nsis" -name "*-setup.exe.sig" 2>/dev/null | head -1)
 
           # Create release if it doesn't exist
-          gh release view "$TAG" 2>/dev/null || gh release create "$TAG" --title "$TAG" --notes "Windows build"
+          gh release view "$TAG" 2>/dev/null || gh release create "$TAG" --title "$TAG" --notes "Release $TAG"
 
           if [ -n "$NSIS" ]; then
             gh release upload "$TAG" "$NSIS" --clobber
-            echo "Uploaded: $NSIS"
+            echo "Uploaded installer: $NSIS"
           else
-            echo "No NSIS installer found"
-            exit 1
+            echo "No NSIS installer found"; exit 1
           fi
+
+          # Build latest.json for auto-updater
+          NSIS_FILENAME=$(basename "$NSIS")
+          NSIS_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${NSIS_FILENAME}"
+          SIG_CONTENT=""
+          if [ -n "$SIG" ]; then
+            SIG_CONTENT=$(cat "$SIG")
+          fi
+
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          cat > latest.json <<JSON
+          {
+            "version": "${VERSION}",
+            "notes": "Release ${TAG}",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "windows-x86_64": {
+                "signature": "${SIG_CONTENT}",
+                "url": "${NSIS_URL}"
+              }
+            }
+          }
+          JSON
+
+          gh release upload "$TAG" latest.json --clobber
+          echo "Uploaded latest.json"

@@ -23,6 +23,14 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM2NzJGMkNCNzNBQTdBRTUKUldUbGVxcHp5L0p5eHBJRG9oWG56aTFPZ0xqQTF4TWdsT01vMmpUVXY0eVBJeGVsNlpOQjYwbGEK",
+      "endpoints": [
+        "https://github.com/afjk/adb-wifi-installer/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["app"],

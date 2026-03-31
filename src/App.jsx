@@ -4,6 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import "./App.css";
 
 const STATUS = {
@@ -419,6 +421,11 @@ export default function App() {
   const [deviceTab, setDeviceTab] = useState("install");
   const [logOpen, setLogOpen] = useState(false);
 
+  // アップデーター
+  const [updateState, setUpdateState] = useState(null); // null | "checking" | "available" | "downloading" | "done" | "latest"
+  const [updateInfo, setUpdateInfo] = useState(null);
+  const [updateProgress, setUpdateProgress] = useState(0);
+
   const [installedPackages, setInstalledPackages] = useState(() => {
     try { return JSON.parse(localStorage.getItem("installedPackages") || "{}"); }
     catch { return {}; }
@@ -470,6 +477,43 @@ export default function App() {
     const iv = setInterval(refreshDevices, 5000);
     return () => clearInterval(iv);
   }, [refreshDevices]);
+
+  const checkUpdate = useCallback(async () => {
+    setUpdateState("checking");
+    try {
+      const update = await check();
+      if (update?.available) {
+        setUpdateInfo(update);
+        setUpdateState("available");
+      } else {
+        setUpdateState("latest");
+        setTimeout(() => setUpdateState(null), 3000);
+      }
+    } catch (e) {
+      addLog("アップデート確認失敗: " + e, "error");
+      setUpdateState(null);
+    }
+  }, [addLog]);
+
+  const installUpdate = useCallback(async () => {
+    if (!updateInfo) return;
+    setUpdateState("downloading");
+    setUpdateProgress(0);
+    try {
+      await updateInfo.downloadAndInstall((event) => {
+        if (event.event === "Progress") {
+          const pct = event.data.chunkLength && event.data.contentLength
+            ? Math.round((event.data.chunkLength / event.data.contentLength) * 100)
+            : 0;
+          setUpdateProgress(pct);
+        }
+      });
+      setUpdateState("done");
+    } catch (e) {
+      addLog("アップデート失敗: " + e, "error");
+      setUpdateState(null);
+    }
+  }, [updateInfo, addLog]);
 
   // Drag & Drop
   useEffect(() => {
@@ -666,6 +710,22 @@ export default function App() {
         <div className="header-right">
           <button className="btn btn-ghost btn-sm" onClick={handleRestartAdb}>adbリセット</button>
           <span className="adb-version">{adbVersion}</span>
+          {updateState === null && (
+            <button className="btn btn-ghost btn-sm" onClick={checkUpdate} title="アップデートを確認">↑ 更新確認</button>
+          )}
+          {updateState === "checking" && <span className="update-status">確認中…</span>}
+          {updateState === "latest" && <span className="update-status ok">最新版です</span>}
+          {updateState === "available" && (
+            <button className="btn btn-update btn-sm" onClick={installUpdate}>
+              ↑ v{updateInfo?.version} に更新
+            </button>
+          )}
+          {updateState === "downloading" && (
+            <span className="update-status">ダウンロード中… {updateProgress}%</span>
+          )}
+          {updateState === "done" && (
+            <button className="btn btn-update btn-sm" onClick={relaunch}>再起動して適用</button>
+          )}
         </div>
       </header>
 

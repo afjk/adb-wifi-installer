@@ -13,7 +13,8 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "node tests/e2e/app.test.js",
     "test:rust": "cd src-tauri && cargo test",
-    "dev:mock": "VITE_MOCK=true vite --port 3334"
+    "dev:mock": "VITE_MOCK=true vite --port 3334",
+    "prepare": "husky"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -24,11 +25,13 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@vitejs/plugin-react": "^4.6.0",
     "@vitest/coverage-v8": "^4.1.2",
+    "husky": "^9.1.7",
     "jsdom": "^27.0.1",
     "puppeteer": "^24.40.0",
     "vite": "^7.0.4",

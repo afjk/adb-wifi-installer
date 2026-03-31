@@ -5,6 +5,18 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+/// Windowsではコンソールウィンドウを開かずにプロセスを起動するヘルパー
+fn new_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    cmd
+}
+
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
@@ -63,7 +75,7 @@ pub struct InstallResult {
 fn get_adb_path() -> String {
     // Check PATH
     let which_cmd = if cfg!(windows) { "where" } else { "which" };
-    if let Ok(output) = Command::new(which_cmd).arg("adb").output() {
+    if let Ok(output) = new_command(which_cmd).arg("adb").output() {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout)
                 .lines()
@@ -138,7 +150,7 @@ async fn scan_network() -> Vec<String> {
 #[tauri::command]
 async fn get_devices() -> Vec<Device> {
     let adb = get_adb_path();
-    let output = match Command::new(&adb).args(["devices", "-l"]).output() {
+    let output = match new_command(&adb).args(["devices", "-l"]).output() {
         Ok(o) => o,
         Err(_) => return vec![],
     };
@@ -182,7 +194,7 @@ async fn get_devices() -> Vec<Device> {
 }
 
 fn adb_connect_once(adb: &str, address: &str) -> Result<String, String> {
-    let output = Command::new(adb)
+    let output = new_command(adb)
         .args(["connect", address])
         .output()
         .map_err(|e| format!("adb not found: {}", e))?;
@@ -196,9 +208,9 @@ fn adb_connect_once(adb: &str, address: &str) -> Result<String, String> {
 }
 
 fn reset_adb_server(adb: &str) {
-    Command::new(adb).arg("kill-server").output().ok();
+    new_command(adb).arg("kill-server").output().ok();
     std::thread::sleep(Duration::from_secs(1));
-    Command::new(adb).arg("start-server").output().ok();
+    new_command(adb).arg("start-server").output().ok();
     std::thread::sleep(Duration::from_secs(1));
 }
 
@@ -223,7 +235,7 @@ async fn connect_device(ip: String, port: u16) -> Result<String, String> {
 #[tauri::command]
 async fn disconnect_device(address: String) -> Result<String, String> {
     let adb = get_adb_path();
-    let output = Command::new(&adb)
+    let output = new_command(&adb)
         .args(["disconnect", &address])
         .output()
         .map_err(|e| e.to_string())?;
@@ -296,7 +308,7 @@ async fn get_apk_package(apk_path: String) -> Result<String, String> {
 async fn get_apk_info(apk_path: String) -> Result<ApkInfo, String> {
     let tool = find_aapt().ok_or("aapt/aapt2 が見つかりません (Android SDK build-tools が必要です)")?;
 
-    let output = Command::new(&tool)
+    let output = new_command(&tool)
         .args(["dump", "badging", &apk_path])
         .output()
         .map_err(|e| e.to_string())?;
@@ -330,7 +342,7 @@ async fn get_apk_info(apk_path: String) -> Result<ApkInfo, String> {
     // 署名情報
     let (signature_subject, signature_sha256, debug_signed) =
         if let Some(signer) = find_apksigner() {
-            let sig_out = Command::new(&signer)
+            let sig_out = new_command(&signer)
                 .args(["verify", "--print-certs", &apk_path])
                 .output().ok();
             if let Some(out) = sig_out {
@@ -397,7 +409,7 @@ async fn install_apk(app: tauri::AppHandle, device: String, apk_path: String) ->
         let dev2 = device.clone();
 
         tauri::async_runtime::spawn_blocking(move || {
-            let mut child = Command::new(&adb2)
+            let mut child = new_command(&adb2)
                 .args(["-s", &device2, "push", &apk2, remote_path])
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
@@ -428,13 +440,13 @@ async fn install_apk(app: tauri::AppHandle, device: String, apk_path: String) ->
         "device": &device, "progress": 100, "phase": "installing"
     }));
 
-    let output = Command::new(&adb)
+    let output = new_command(&adb)
         .args(["-s", &device, "shell", "pm", "install", "-r", remote_path])
         .output()
         .map_err(|e| e.to_string())?;
 
     // Cleanup temp file
-    let _ = Command::new(&adb)
+    let _ = new_command(&adb)
         .args(["-s", &device, "shell", "rm", "-f", remote_path])
         .output();
 
@@ -462,7 +474,7 @@ async fn install_apk(app: tauri::AppHandle, device: String, apk_path: String) ->
 #[tauri::command]
 async fn uninstall_apk(device: String, package: String) -> Result<String, String> {
     let adb = get_adb_path();
-    let output = Command::new(&adb)
+    let output = new_command(&adb)
         .args(["-s", &device, "uninstall", &package])
         .output()
         .map_err(|e| e.to_string())?;
@@ -484,7 +496,7 @@ async fn identify_device(device: String) -> Result<String, String> {
         let mut methods = vec![];
 
         // 1. 画面を起こす
-        Command::new(&adb)
+        new_command(&adb)
             .args(["-s", &device, "shell", "input", "keyevent", "KEYCODE_WAKEUP"])
             .output().ok();
 
@@ -494,16 +506,16 @@ async fn identify_device(device: String) -> Result<String, String> {
         let brightness_ok = !orig.is_empty() && orig != "null";
         if brightness_ok {
             for _ in 0..3 {
-                Command::new(&adb)
+                new_command(&adb)
                     .args(["-s", &device, "shell", "settings", "put", "system", "screen_brightness", "255"])
                     .output().ok();
                 std::thread::sleep(Duration::from_millis(400));
-                Command::new(&adb)
+                new_command(&adb)
                     .args(["-s", &device, "shell", "settings", "put", "system", "screen_brightness", "10"])
                     .output().ok();
                 std::thread::sleep(Duration::from_millis(400));
             }
-            Command::new(&adb)
+            new_command(&adb)
                 .args(["-s", &device, "shell", "settings", "put", "system", "screen_brightness", orig])
                 .output().ok();
             methods.push("輝度フラッシュ");
@@ -511,13 +523,13 @@ async fn identify_device(device: String) -> Result<String, String> {
 
         // 3. フラッシュライト（スマートフォン向け）
         let flash_ok = (0..3).fold(false, |_, _| {
-            let on = Command::new(&adb)
+            let on = new_command(&adb)
                 .args(["-s", &device, "shell", "cmd", "flashlight", "enable"])
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false);
             std::thread::sleep(Duration::from_millis(400));
-            Command::new(&adb)
+            new_command(&adb)
                 .args(["-s", &device, "shell", "cmd", "flashlight", "disable"])
                 .output().ok();
             std::thread::sleep(Duration::from_millis(300));
@@ -532,11 +544,11 @@ async fn identify_device(device: String) -> Result<String, String> {
             // Android 8-11: vibrator_compat
             vec!["-s", &device, "shell", "cmd", "vibrator_compat", "vibrate", "800"],
         ].iter().any(|args| {
-            if Command::new(&adb).args(args).output().map(|o| o.status.success()).unwrap_or(false) {
+            if new_command(&adb).args(args).output().map(|o| o.status.success()).unwrap_or(false) {
                 std::thread::sleep(Duration::from_millis(400));
-                Command::new(&adb).args(args).output().ok();
+                new_command(&adb).args(args).output().ok();
                 std::thread::sleep(Duration::from_millis(400));
-                Command::new(&adb).args(args).output().ok();
+                new_command(&adb).args(args).output().ok();
                 true
             } else { false }
         });
@@ -544,7 +556,7 @@ async fn identify_device(device: String) -> Result<String, String> {
 
 
         // 6. 通知バナー（VRオーバーレイに表示される場合がある）
-        Command::new(&adb)
+        new_command(&adb)
             .args([
                 "-s", &device,
                 "shell", "cmd", "notification", "post",
@@ -569,7 +581,7 @@ async fn identify_device(device: String) -> Result<String, String> {
 #[tauri::command]
 async fn launch_app(device: String, package: String) -> Result<String, String> {
     let adb = get_adb_path();
-    let output = Command::new(&adb)
+    let output = new_command(&adb)
         .args([
             "-s", &device,
             "shell", "monkey",
@@ -675,7 +687,7 @@ async fn list_files(device: String, path: String) -> Result<Vec<FileEntry>, Stri
 #[tauri::command]
 async fn delete_path(device: String, path: String) -> Result<String, String> {
     let adb = get_adb_path();
-    let output = Command::new(&adb)
+    let output = new_command(&adb)
         .args(["-s", &device, "shell", "rm", "-rf", &path])
         .output()
         .map_err(|e| e.to_string())?;
@@ -695,7 +707,7 @@ async fn push_files(device: String, local_paths: Vec<String>, remote_dir: String
     let count = local_paths.len();
     args.extend(local_paths);
     args.push(remote_dir);
-    let output = Command::new(&adb)
+    let output = new_command(&adb)
         .args(&args)
         .output()
         .map_err(|e| e.to_string())?;
@@ -713,7 +725,7 @@ async fn pull_to_tmp(device: String, remote_path: String) -> Result<String, Stri
     let adb = get_adb_path();
     let file_name = remote_path.rsplit('/').next().unwrap_or("file").to_string();
     let tmp = std::env::temp_dir().join(&file_name);
-    let output = Command::new(&adb)
+    let output = new_command(&adb)
         .args(["-s", &device, "pull", &remote_path, tmp.to_str().unwrap()])
         .output()
         .map_err(|e| e.to_string())?;
@@ -732,7 +744,7 @@ async fn pull_file(device: String, remote_path: String) -> Result<String, String
         .or_else(|| dirs::home_dir())
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
     let local_path = local_dir.join(&file_name);
-    let output = Command::new(&adb)
+    let output = new_command(&adb)
         .args(["-s", &device, "pull", &remote_path, local_path.to_str().unwrap()])
         .output()
         .map_err(|e| e.to_string())?;
@@ -747,7 +759,7 @@ async fn pull_file(device: String, remote_path: String) -> Result<String, String
 #[tauri::command]
 async fn push_file(device: String, local_path: String, remote_dir: String) -> Result<String, String> {
     let adb = get_adb_path();
-    let output = Command::new(&adb)
+    let output = new_command(&adb)
         .args(["-s", &device, "push", &local_path, &remote_dir])
         .output()
         .map_err(|e| e.to_string())?;
@@ -778,7 +790,7 @@ async fn preview_file(device: String, remote_path: String) -> Result<serde_json:
         let tmp = std::env::temp_dir().join(
             remote_path.rsplit('/').next().unwrap_or("preview.png")
         );
-        let ok = Command::new(&adb)
+        let ok = new_command(&adb)
             .args(["-s", &device, "pull", &remote_path, tmp.to_str().unwrap()])
             .output()
             .map(|o| o.status.success())
@@ -827,7 +839,7 @@ async fn restart_adb_server() -> Result<String, String> {
     reset_adb_server(&adb);
 
     // adb devices で起動確認
-    let check = Command::new(&adb)
+    let check = new_command(&adb)
         .arg("devices")
         .output()
         .map_err(|e| e.to_string())?;
@@ -844,7 +856,7 @@ async fn restart_adb_server() -> Result<String, String> {
 async fn pair_device(ip: String, port: u16, code: String) -> Result<String, String> {
     let adb = get_adb_path();
     let address = format!("{}:{}", ip, port);
-    let output = Command::new(&adb)
+    let output = new_command(&adb)
         .args(["pair", &address, &code])
         .output()
         .map_err(|e| e.to_string())?;
@@ -862,7 +874,7 @@ async fn pair_device(ip: String, port: u16, code: String) -> Result<String, Stri
 #[tauri::command]
 async fn get_usb_devices() -> Vec<Device> {
     let adb = get_adb_path();
-    let output = match Command::new(&adb).args(["devices", "-l"]).output() {
+    let output = match new_command(&adb).args(["devices", "-l"]).output() {
         Ok(o) => o,
         Err(_) => return vec![],
     };
@@ -907,7 +919,7 @@ async fn get_usb_devices() -> Vec<Device> {
 async fn enable_tcpip(device: String, port: u16) -> Result<String, String> {
     let adb = get_adb_path();
     let port_str = port.to_string();
-    let output = Command::new(&adb)
+    let output = new_command(&adb)
         .args(["-s", &device, "tcpip", &port_str])
         .output()
         .map_err(|e| format!("adb not found: {}", e))?;
@@ -971,7 +983,7 @@ fn parse_ip_from_inet_line(line: &str) -> Option<String> {
 fn run_adb_shell(adb: &str, device: &str, cmd: &[&str]) -> String {
     let mut args = vec!["-s", device, "shell"];
     args.extend_from_slice(cmd);
-    Command::new(adb)
+    new_command(adb)
         .args(&args)
         .output()
         // Strip \r so \r\n line endings don't break parsing
@@ -1078,7 +1090,7 @@ fn get_scrcpy_path() -> Option<String> {
     }
     // Fallback: try PATH
     let which_cmd = if cfg!(windows) { "where" } else { "which" };
-    if let Ok(out) = Command::new(which_cmd).arg("scrcpy").output() {
+    if let Ok(out) = new_command(which_cmd).arg("scrcpy").output() {
         if out.status.success() {
             let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if !p.is_empty() { return Some(p); }
@@ -1098,7 +1110,7 @@ async fn launch_scrcpy(device: String, extra_args: Option<String>) -> Result<Str
         .parent()
         .map(|p| p.to_string_lossy().to_string());
 
-    let mut cmd = Command::new(&scrcpy);
+    let mut cmd = new_command(&scrcpy);
 
     // PATH を拡張して adb・scrcpy が見つかるようにする
     let current_path = std::env::var("PATH").unwrap_or_default();
@@ -1138,14 +1150,14 @@ async fn launch_scrcpy(device: String, extra_args: Option<String>) -> Result<Str
 #[tauri::command]
 async fn get_scrcpy_version() -> Result<String, String> {
     let scrcpy = get_scrcpy_path().ok_or_else(|| "not found".to_string())?;
-    let out = Command::new(&scrcpy).arg("--version").output().map_err(|e| e.to_string())?;
+    let out = new_command(&scrcpy).arg("--version").output().map_err(|e| e.to_string())?;
     Ok(String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("unknown").to_string())
 }
 
 #[tauri::command]
 async fn get_adb_version() -> Result<String, String> {
     let adb = get_adb_path();
-    let output = Command::new(&adb)
+    let output = new_command(&adb)
         .arg("version")
         .output()
         .map_err(|e| format!("adb not found: {}", e))?;
@@ -1166,7 +1178,7 @@ async fn install_scrcpy(app: tauri::AppHandle) -> Result<String, String> {
         .map(|s| s.to_string())
         .ok_or_else(|| "Homebrew が見つかりません。https://brew.sh からインストールしてください".to_string())?;
 
-    let mut child = Command::new(&brew)
+    let mut child = new_command(&brew)
         .arg("install")
         .arg("scrcpy")
         .stdout(Stdio::piped())
@@ -1214,7 +1226,7 @@ async fn run_terminal_command(device: String, command: String) -> Result<String,
         full_args.push(device);
     }
     full_args.extend(args);
-    let output = Command::new(&adb)
+    let output = new_command(&adb)
         .args(&full_args)
         .output()
         .map_err(|e| e.to_string())?;
@@ -1278,7 +1290,7 @@ async fn start_logcat(
         }
     }
 
-    let mut child = Command::new(&adb)
+    let mut child = new_command(&adb)
         .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

@@ -1092,7 +1092,36 @@ async fn launch_scrcpy(device: String, extra_args: Option<String>) -> Result<Str
     let scrcpy = get_scrcpy_path()
         .ok_or_else(|| "scrcpy が見つかりません。brew install scrcpy でインストールしてください".to_string())?;
 
+    // adb のパスを探して PATH に追加（GUI アプリはシェルの PATH を引き継がないため）
+    let adb_path = get_adb_path();
+    let adb_dir = std::path::Path::new(&adb_path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string());
+
     let mut cmd = Command::new(&scrcpy);
+
+    // PATH を拡張して adb・scrcpy が見つかるようにする
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let extra_paths = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/Users/afjk/Library/Android/sdk/platform-tools",
+    ];
+    let mut path_dirs: Vec<String> = extra_paths.iter().map(|s| s.to_string()).collect();
+    if let Some(dir) = adb_dir {
+        path_dirs.push(dir);
+    }
+    path_dirs.push(current_path);
+    let new_path = path_dirs.join(":");
+    cmd.env("PATH", &new_path);
+
+    // ANDROID_HOME も設定
+    if std::env::var("ANDROID_HOME").is_err() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        cmd.env("ANDROID_HOME", format!("{}/Library/Android/sdk", home));
+    }
+
     if !device.is_empty() {
         cmd.args(["-s", &device]);
     }

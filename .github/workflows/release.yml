@@ -44,7 +44,9 @@ jobs:
           BUNDLE_DIR="src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
 
           NSIS=$(find "$BUNDLE_DIR/nsis" -name "*-setup.exe" 2>/dev/null | head -1)
-          SIG=$(find "$BUNDLE_DIR/nsis" -name "*-setup.exe.sig" 2>/dev/null | head -1)
+          SIG=$(find "$BUNDLE_DIR" -name "*.sig" 2>/dev/null | head -1)
+          echo "NSIS: $NSIS"
+          echo "SIG: $SIG"
 
           # Create release if it doesn't exist
           gh release view "$TAG" 2>/dev/null || gh release create "$TAG" --title "$TAG" --notes "Release $TAG"

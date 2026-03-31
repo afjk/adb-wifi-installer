@@ -1158,6 +1158,52 @@ async fn get_adb_version() -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn install_scrcpy(app: tauri::AppHandle) -> Result<String, String> {
+    // brew のパスを探す
+    let brew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Homebrew が見つかりません。https://brew.sh からインストールしてください".to_string())?;
+
+    let mut child = Command::new(&brew)
+        .arg("install")
+        .arg("scrcpy")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("brew 起動失敗: {}", e))?;
+
+    // stdout と stderr をマージしてイベントで流す
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let app_out = app.clone();
+    let app_err = app.clone();
+
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().map_while(Result::ok) {
+            let _ = app_out.emit("brew_install_line", line);
+        }
+    });
+    thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            let _ = app_err.emit("brew_install_line", line);
+        }
+    });
+
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if status.success() {
+        let _ = app.emit("brew_install_done", "success");
+        Ok("scrcpy のインストールが完了しました".to_string())
+    } else {
+        let _ = app.emit("brew_install_done", "error");
+        Err("brew install scrcpy が失敗しました".to_string())
+    }
+}
+
+#[tauri::command]
 async fn run_terminal_command(device: String, command: String) -> Result<String, String> {
     let adb = get_adb_path();
     let args: Vec<String> = shell_words(&command);
@@ -1296,6 +1342,7 @@ pub fn run() {
             get_adb_version,
             launch_scrcpy,
             get_scrcpy_version,
+            install_scrcpy,
             run_terminal_command,
             start_logcat,
             stop_logcat,

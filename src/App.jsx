@@ -421,6 +421,10 @@ export default function App() {
   const [deviceTab, setDeviceTab] = useState("install");
   const [logOpen, setLogOpen] = useState(false);
 
+  // scrcpy インストール
+  const [scrcpyInstalling, setScrcpyInstalling] = useState(false);
+  const [scrcpyInstallLog, setScrcpyInstallLog] = useState([]);
+
   // アップデーター
   const [updateState, setUpdateState] = useState(null); // null | "checking" | "available" | "downloading" | "done" | "latest"
   const [updateInfo, setUpdateInfo] = useState(null);
@@ -456,6 +460,24 @@ export default function App() {
     listen("logcat_stopped", () => setLogcatRunning(false)).then(fn => { unlistenStop = fn; });
     return () => { unlistenLine?.(); unlistenStop?.(); };
   }, []);
+
+  // brew install scrcpy イベント
+  useEffect(() => {
+    let unlistenLine, unlistenDone;
+    listen("brew_install_line", (e) => {
+      setScrcpyInstallLog(prev => [...prev.slice(-199), e.payload]);
+    }).then(fn => { unlistenLine = fn; });
+    listen("brew_install_done", (e) => {
+      setScrcpyInstalling(false);
+      if (e.payload === "success") {
+        invoke("get_scrcpy_version").then(setScrcpyVersion).catch(() => {});
+        addLog("scrcpy のインストールが完了しました", "success");
+      } else {
+        addLog("scrcpy のインストールに失敗しました", "error");
+      }
+    }).then(fn => { unlistenDone = fn; });
+    return () => { unlistenLine?.(); unlistenDone?.(); };
+  }, [addLog]);
 
   const addLog = useCallback((msg, type = "info") => {
     const time = new Date().toLocaleTimeString();
@@ -624,6 +646,19 @@ export default function App() {
       addLog(await invoke("uninstall_apk", { device, package: pkg }), "success");
       setInstalledPackages(prev => { const n = { ...prev }; delete n[device]; return n; });
     } catch (e) { addLog("アンインストール失敗: " + e, "error"); }
+  };
+
+  const handleInstallScrcpy = async () => {
+    setScrcpyInstalling(true);
+    setScrcpyInstallLog([]);
+    addLog("brew install scrcpy を実行中...", "cmd");
+    try {
+      const msg = await invoke("install_scrcpy");
+      addLog(msg, "success");
+    } catch (e) {
+      addLog("scrcpy インストール失敗: " + e, "error");
+      setScrcpyInstalling(false);
+    }
   };
 
   const handleScrcpy = async (device) => {
@@ -836,15 +871,26 @@ export default function App() {
                     <button className="btn btn-scrcpy btn-sm" onClick={() => handleScrcpy(selectedAddr)} title={`scrcpy ${scrcpyVersion}`}>
                       📺 画面
                     </button>
+                  ) : scrcpyInstalling ? (
+                    <button className="btn btn-ghost btn-sm" disabled>📺 インストール中…</button>
                   ) : (
-                    <button className="btn btn-ghost btn-sm" disabled title="scrcpy が見つかりません (brew install scrcpy)">
-                      📺
+                    <button className="btn btn-ghost btn-sm" onClick={handleInstallScrcpy} title="クリックして brew install scrcpy を実行">
+                      📺 scrcpy を取得
                     </button>
                   )}
                   <button className="btn btn-ghost btn-sm" onClick={() => handleIdentify(selectedAddr)} title="フラッシュ＋バイブで識別">📍 識別</button>
                   <button className="btn btn-danger btn-sm" onClick={() => handleDisconnect(selectedAddr)}>切断</button>
                 </div>
               </div>
+
+              {/* scrcpy インストールログ */}
+              {scrcpyInstalling && scrcpyInstallLog.length > 0 && (
+                <div className="brew-install-log">
+                  {scrcpyInstallLog.slice(-8).map((line, i) => (
+                    <div key={i} className="brew-line">{line}</div>
+                  ))}
+                </div>
+              )}
 
               {/* Tabs */}
               <div className="device-tabs">

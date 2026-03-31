@@ -442,6 +442,13 @@ body {
 .btn-update:hover:not(:disabled) { background: rgba(52,211,153,0.25); }
 .update-status { font-size: 0.75rem; color: var(--text-muted); padding: 0 6px; }
 .update-status.ok { color: var(--success); }
+.brew-install-log {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 6px; margin: 6px 16px; padding: 8px 12px;
+  font-family: monospace; font-size: 0.72rem; color: var(--text-muted);
+  max-height: 120px; overflow-y: auto;
+}
+.brew-line { white-space: pre-wrap; line-height: 1.4; }
 
 /* ─── Input ───────────────────────────────────────────── */
 .input {

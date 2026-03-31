@@ -5,7 +5,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
 import "./App.css";
 
 const STATUS = {
@@ -759,7 +758,7 @@ export default function App() {
             <span className="update-status">ダウンロード中… {updateProgress}%</span>
           )}
           {updateState === "done" && (
-            <button className="btn btn-update btn-sm" onClick={relaunch}>再起動して適用</button>
+            <button className="btn btn-update btn-sm" onClick={() => invoke("plugin:process|restart")}>再起動して適用</button>
           )}
         </div>
       </header>

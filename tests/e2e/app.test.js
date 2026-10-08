@@ -58,7 +58,11 @@ async function setup() {
   browser = await puppeteer.launch({ headless: true, channel });
   page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
-  await page.goto(BASE_URL, { waitUntil: "networkidle0", timeout: 30000 });
+  page.on("pageerror", error => console.error("Browser error:", error.message));
+  page.on("requestfailed", request => console.error("Request failed:", request.url(), request.failure()?.errorText));
+  // Vite's development connections need not become idle for the UI to be ready.
+  await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
+  await page.waitForSelector(".app header", { timeout: 30000 });
 }
 
 async function teardown() {
@@ -127,11 +131,11 @@ async function run() {
     const results = await run();
     console.log(`\nResults: ${results.passed} passed, ${results.failed} failed`);
     if (results.failed > 0) {
-      process.exit(1);
+      process.exitCode = 1;
     }
   } catch (e) {
     console.error("Fatal error:", e.message);
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     await teardown();
   }

@@ -1,70 +1,81 @@
-name: Release (Windows)
+name: Windows builds
 
 on:
-  push:
-    tags:
-      - 'v*'
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: windows-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.release.id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build-windows:
-    name: Build Windows (x64)
+  pr-build:
+    name: Windows PR installer (unsigned)
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - run: npm ci --legacy-peer-deps
+      - name: Build unsigned test installer
+        run: npm run tauri build -- --ci --no-sign --target x86_64-pc-windows-msvc --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-unsigned-pr-${{ github.event.pull_request.number }}-${{ github.sha }}
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  release-build:
+    name: Windows release assets (signed updater)
+    if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ github.ref_name }}
-
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      RELEASE_ID: ${{ github.event.release.id }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      - name: Validate release version
-        shell: bash
-        run: node scripts/release-metadata.mjs "$RELEASE_TAG"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Validate published release and trusted source
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/attach-release.mjs --check
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-
-      - name: Install frontend dependencies
-        run: npm ci --legacy-peer-deps
-
+      - run: npm ci --legacy-peer-deps
       - name: Build signed updater artifacts
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm run tauri build -- --ci --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.windows-release.conf.json
-
       - name: Validate and stage release assets
         shell: bash
         run: node scripts/release-metadata.mjs "$RELEASE_TAG" src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis release-assets
-
-      - name: Upload and verify draft before publishing
+      - name: Attach and verify assets on the published release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          TAG="$RELEASE_TAG"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release already exists; refusing to overwrite $TAG"
-            exit 1
-          fi
-          gh release create "$TAG" --verify-tag --draft --title "ADB WiFi Installer $TAG" --notes-file "docs/releases/$TAG.md"
-          gh release upload "$TAG" release-assets/*
-          gh release download "$TAG" --dir release-verification
-          for asset in release-assets/*; do
-            cmp "$asset" "release-verification/$(basename "$asset")"
-          done
-          gh release edit "$TAG" --draft=false --latest
+        run: node scripts/attach-release.mjs release-assets

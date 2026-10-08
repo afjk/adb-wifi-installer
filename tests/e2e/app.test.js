@@ -51,7 +51,11 @@ async function setup() {
 
   await waitForServer(BASE_URL);
 
-  browser = await puppeteer.launch({ headless: true });
+  // Ubuntu's AppArmor profile supports the runner's installed Chrome. Keep
+  // its sandbox enabled instead of launching the unprofiled downloaded binary.
+  const channel = process.env.GITHUB_ACTIONS === "true" && process.platform === "linux"
+    ? "chrome" : undefined;
+  browser = await puppeteer.launch({ headless: true, channel });
   page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
   await page.goto(BASE_URL, { waitUntil: "networkidle0", timeout: 30000 });

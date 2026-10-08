@@ -62,7 +62,12 @@ async function setup() {
   page.on("pageerror", error => console.error("Browser error:", error.message));
   page.on("requestfailed", request => console.error("Request failed:", request.url(), request.failure()?.errorText));
   // Vite's development connections need not become idle for the UI to be ready.
-  console.log("Navigating to", BASE_URL);
+  console.log("Browser version:", await browser.version());
+  page.on("request", request => console.log("Request:", request.method(), request.url()));
+  page.on("response", response => console.log("Response:", response.status(), response.url()));
+  page.on("console", message => console.log("Browser console:", message.type(), message.text()));
+  await page.goto("data:text/html,<title>Browser readiness probe</title>", { waitUntil: "domcontentloaded", timeout: 10000 });
+  console.log("Browser probe ready; navigating to", BASE_URL);
   await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
   await page.waitForSelector(".app header", { timeout: 30000 });
 }

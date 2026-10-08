@@ -46,7 +46,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const sourceName = installers[0];
     const fileName = sourceName.replaceAll(" ", ".");
     const signature = readFileSync(join(bundleDir, `${sourceName}.sig`), "utf8");
-    const manifest = makeManifest(version, fileName, signature);
+    const event = process.env.GITHUB_EVENT_NAME === "release"
+      ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")) : null;
+    const manifest = makeManifest(version, fileName, signature, event?.release?.published_at);
     mkdirSync(outputDir, { recursive: true });
     copyFileSync(join(bundleDir, sourceName), join(outputDir, fileName));
     copyFileSync(join(bundleDir, `${sourceName}.sig`), join(outputDir, `${fileName}.sig`));

@@ -12,7 +12,7 @@ import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "../..");
 const PORT = 3334;
-const BASE_URL = `http://localhost:${PORT}`;
+const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 let browser;
 let page;
@@ -33,7 +33,7 @@ async function waitForServer(url, timeoutMs = 30000) {
 }
 
 async function setup() {
-  viteProcess = spawn("npx", ["vite", "--port", String(PORT), "--mode", "test"], {
+  viteProcess = spawn(process.execPath, [resolve(ROOT, "node_modules/vite/bin/vite.js"), "--host", "127.0.0.1", "--port", String(PORT), "--mode", "test"], {
     cwd: ROOT,
     stdio: "pipe",
     env: {

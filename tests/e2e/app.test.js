@@ -55,21 +55,30 @@ async function setup() {
   // its sandbox enabled instead of launching the unprofiled downloaded binary.
   const channel = process.env.GITHUB_ACTIONS === "true" && process.platform === "linux"
     ? "chrome" : undefined;
-  browser = await puppeteer.launch({ headless: true, channel });
+  console.log("Launching sandboxed browser", channel || "downloaded Chrome");
+  browser = await puppeteer.launch({ headless: true, channel, timeout: 30000, protocolTimeout: 30000 });
   page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
   page.on("pageerror", error => console.error("Browser error:", error.message));
   page.on("requestfailed", request => console.error("Request failed:", request.url(), request.failure()?.errorText));
   // Vite's development connections need not become idle for the UI to be ready.
+  console.log("Navigating to", BASE_URL);
   await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
   await page.waitForSelector(".app header", { timeout: 30000 });
 }
 
 async function teardown() {
-  if (browser) await browser.close();
+  // A wedged browser must not keep a failed CI check running indefinitely.
+  if (browser) {
+    const process = browser.process();
+    const timeout = setTimeout(() => process?.kill("SIGKILL"), 5000);
+    try { await browser.close(); } finally { clearTimeout(timeout); }
+  }
   if (viteProcess) {
     viteProcess.kill("SIGTERM");
-    await new Promise(r => setTimeout(r, 500));
+    viteProcess.stdout.destroy();
+    viteProcess.stderr.destroy();
+    viteProcess.unref();
   }
 }
 

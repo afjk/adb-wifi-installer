@@ -713,7 +713,7 @@ async fn push_files(device: String, local_paths: Vec<String>, remote_dir: String
         .map_err(|e| e.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if output.status.success() {
-        Ok(format!("アップロード完了: {} ファイル", count))
+        Ok(format!("アップロード完了: {} 項目", count))
     } else {
         Err(stderr)
     }

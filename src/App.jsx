@@ -17,7 +17,7 @@ const STATUS = {
 };
 
 // ─── ファイルエクスプローラー (インライン) ────────────────────────────────
-function FileExplorer({ device }) {
+export function FileExplorer({ device, dropHandlerRef }) {
   const [path, setPath] = useState("/storage/emulated/0");
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -26,20 +26,37 @@ function FileExplorer({ device }) {
   const [editingPath, setEditingPath] = useState(false);
   const [pathInput, setPathInput] = useState("/storage/emulated/0");
   const pathInputRef = useRef(null);
+  const uploadingRef = useRef(false);
+  const loadRequestRef = useRef(0);
+  const requestedPathRef = useRef(path);
+  const contextRef = useRef(null);
+  contextRef.current = { device, path };
+  useEffect(() => {
+    contextRef.current = { device, path };
+    return () => { contextRef.current = null; };
+  }, [device, path]);
 
   const load = async (p) => {
+    const request = ++loadRequestRef.current;
+    requestedPathRef.current = p;
+    const isLatest = () => request === loadRequestRef.current
+      && contextRef.current?.device === device;
     setLoading(true);
     setPreview(null);
     setEditingPath(false);
     try {
       const entries = await invoke("list_files", { device, path: p });
+      if (!isLatest()) return;
       setFiles(entries);
       setPath(p);
       setPathInput(p);
     } catch (e) {
-      setStatus("エラー: " + e);
+      if (isLatest()) {
+        requestedPathRef.current = contextRef.current.path;
+        setStatus("エラー: " + e);
+      }
     } finally {
-      setLoading(false);
+      if (isLatest()) setLoading(false);
     }
   };
 
@@ -81,20 +98,42 @@ function FileExplorer({ device }) {
     } catch (e) { setStatus("❌ " + e); }
   };
 
-  const handleUpload = async () => {
-    const { open: dlg } = await import("@tauri-apps/plugin-dialog");
-    const selected = await dlg({ multiple: true });
-    if (!selected) return;
-    const paths = Array.isArray(selected) ? selected : [selected];
-    setStatus(`アップロード中... (${paths.length} ファイル)`);
+  const uploadPaths = async (paths) => {
+    if (!paths.length || uploadingRef.current) return;
+    uploadingRef.current = true;
+    const target = { device, path };
+    const isCurrent = () => contextRef.current?.device === target.device
+      && contextRef.current?.path === target.path
+      && requestedPathRef.current === target.path;
+    setStatus(`アップロード中... (${paths.length} 項目)`);
     try {
-      setStatus("✅ " + await invoke("push_files", { device, localPaths: paths, remoteDir: path }));
-      load(path);
+      const result = await invoke("push_files", { device, localPaths: paths, remoteDir: path });
+      if (contextRef.current?.device === target.device) setStatus("✅ " + result);
+      if (isCurrent()) await load(path);
+    } catch (e) {
+      // adb can copy some items before failing; show those without hiding the error.
+      if (isCurrent()) await load(path);
+      if (contextRef.current?.device === target.device) setStatus("❌ " + e);
+    } finally {
+      uploadingRef.current = false;
+    }
+  };
+
+  // App owns the single native drop listener; only the mounted explorer uploads.
+  useEffect(() => {
+    if (!dropHandlerRef) return;
+    dropHandlerRef.current = uploadPaths;
+    return () => { dropHandlerRef.current = null; };
+  });
+
+  const handleUpload = async () => {
+    try {
+      const selected = await open({ multiple: true });
+      if (selected) await uploadPaths(Array.isArray(selected) ? selected : [selected]);
     } catch (e) { setStatus("❌ " + e); }
   };
 
   const handleDelete = async (f) => {
-    if (!window.confirm(`削除しますか?\n${f.path}`)) return;
     setStatus("削除中: " + f.name);
     try {
       setStatus("✅ " + await invoke("delete_path", { device, path: f.path }));
@@ -206,7 +245,8 @@ function FileExplorer({ device }) {
         )}
       </div>
 
-      {status && <div className="fe-status">{status}</div>}
+      <div className="fe-status">ファイル・フォルダをドロップして現在のディレクトリへアップロード</div>
+      {status && <div className="fe-status" role="status">{status}</div>}
     </div>
   );
 }
@@ -415,6 +455,7 @@ export default function App() {
   const logcatRef = useRef(null);
   const MAX_LOGCAT_LINES = 500;
   const [dragOver, setDragOver] = useState(false);
+  const fileDropHandlerRef = useRef(null);
 
   // 新レイアウト用state
   const [selectedAddr, setSelectedAddr] = useState(null);
@@ -540,15 +581,25 @@ export default function App() {
   // Drag & Drop
   useEffect(() => {
     let unlisten;
+    let disposed = false;
     getCurrentWebview().onDragDropEvent((e) => {
+      if (disposed) return;
+      if (fileDropHandlerRef.current) {
+        setDragOver(false);
+        if (e.payload.type === "drop") fileDropHandlerRef.current(e.payload.paths || []);
+        return;
+      }
       if (e.payload.type === "over") { setDragOver(true); }
       else if (e.payload.type === "drop") {
         setDragOver(false);
         const apks = (e.payload.paths || []).filter(p => p.endsWith(".apk"));
         if (apks.length > 0) applyApkPath(apks[0]);
       } else { setDragOver(false); }
-    }).then(fn => { unlisten = fn; });
-    return () => { if (unlisten) unlisten(); };
+    }).then(fn => {
+      if (disposed) fn();
+      else unlisten = fn;
+    }).catch(e => { if (!disposed) addLog("ドロップ受付失敗: " + e, "error"); });
+    return () => { disposed = true; if (unlisten) unlisten(); };
   }, []);
 
   const applyApkPath = useCallback(async (path) => {
@@ -928,7 +979,7 @@ export default function App() {
                     busy={busy}
                   />
                 )}
-                {deviceTab === "files" && <FileExplorer device={selectedAddr} />}
+                {deviceTab === "files" && <FileExplorer key={selectedAddr} device={selectedAddr} dropHandlerRef={fileDropHandlerRef} />}
                 {deviceTab === "terminal" && (
                   <div className="terminal-panel">
                     <div className="terminal-output" ref={termOutputRef}>

@@ -19,6 +19,7 @@ export default defineConfig(async () => ({
       "@tauri-apps/api/webview": resolve(__dirname, "src/__mocks__/@tauri-apps/api/webview-vite.js"),
       "@tauri-apps/plugin-dialog": resolve(__dirname, "src/__mocks__/@tauri-apps/plugin-dialog-vite.js"),
       "@tauri-apps/plugin-opener": resolve(__dirname, "src/__mocks__/@tauri-apps/plugin-opener-vite.js"),
+      "@tauri-apps/plugin-updater": resolve(__dirname, "src/__mocks__/@tauri-apps/plugin-updater-vite.js"),
     },
   } : undefined,
 

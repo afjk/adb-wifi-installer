@@ -12,7 +12,7 @@ import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "../..");
 const PORT = 3334;
-const BASE_URL = `http://localhost:${PORT}`;
+const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 let browser;
 let page;
@@ -33,7 +33,7 @@ async function waitForServer(url, timeoutMs = 30000) {
 }
 
 async function setup() {
-  viteProcess = spawn("npx", ["vite", "--port", String(PORT), "--mode", "test"], {
+  viteProcess = spawn(process.execPath, [resolve(ROOT, "node_modules/vite/bin/vite.js"), "--host", "127.0.0.1", "--port", String(PORT), "--mode", "test"], {
     cwd: ROOT,
     stdio: "pipe",
     env: {
@@ -42,26 +42,39 @@ async function setup() {
     },
   });
 
-  viteProcess.stderr.on("data", d => {
-    const msg = d.toString();
-    if (msg.includes("error") && !msg.includes("Transform")) {
-      process.stderr.write(msg);
-    }
-  });
+  viteProcess.stderr.on("data", d => process.stderr.write(d));
 
   await waitForServer(BASE_URL);
 
-  browser = await puppeteer.launch({ headless: true });
+  // Ubuntu's AppArmor profile supports the runner's installed Chrome. Keep
+  // its sandbox enabled instead of launching the unprofiled downloaded binary.
+  const channel = process.env.GITHUB_ACTIONS === "true" && process.platform === "linux"
+    ? "chrome" : undefined;
+  console.log("Launching sandboxed browser", channel || "downloaded Chrome");
+  browser = await puppeteer.launch({ headless: true, channel, timeout: 30000, protocolTimeout: 30000 });
   page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
-  await page.goto(BASE_URL, { waitUntil: "networkidle0", timeout: 30000 });
+  page.on("pageerror", error => console.error("Browser error:", error.message));
+  page.on("requestfailed", request => console.error("Request failed:", request.url(), request.failure()?.errorText));
+  // Vite's development connections need not become idle for the UI to be ready.
+  console.log("Browser version:", await browser.version());
+  console.log("Navigating to", BASE_URL);
+  await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
+  await page.waitForSelector(".app header", { timeout: 30000 });
 }
 
 async function teardown() {
-  if (browser) await browser.close();
+  // A wedged browser must not keep a failed CI check running indefinitely.
+  if (browser) {
+    const process = browser.process();
+    const timeout = setTimeout(() => process?.kill("SIGKILL"), 5000);
+    try { await browser.close(); } finally { clearTimeout(timeout); }
+  }
   if (viteProcess) {
     viteProcess.kill("SIGTERM");
-    await new Promise(r => setTimeout(r, 500));
+    viteProcess.stdout.destroy();
+    viteProcess.stderr.destroy();
+    viteProcess.unref();
   }
 }
 
@@ -123,11 +136,11 @@ async function run() {
     const results = await run();
     console.log(`\nResults: ${results.passed} passed, ${results.failed} failed`);
     if (results.failed > 0) {
-      process.exit(1);
+      process.exitCode = 1;
     }
   } catch (e) {
     console.error("Fatal error:", e.message);
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     await teardown();
   }

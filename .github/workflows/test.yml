@@ -27,6 +27,9 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
+      - name: Validate release metadata
+        run: node --test scripts/release-metadata.test.mjs
+
       - name: Run unit tests
         run: npm test
 

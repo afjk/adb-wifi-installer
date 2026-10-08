@@ -5,12 +5,19 @@ on:
     tags:
       - 'v*'
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-windows:
     name: Build Windows (x64)
     runs-on: windows-latest
+    timeout-minutes: 30
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
 
     steps:
       - name: Checkout
@@ -21,66 +28,43 @@ jobs:
         with:
           node-version: 20
 
+      - name: Validate release version
+        shell: bash
+        run: node scripts/release-metadata.mjs "$RELEASE_TAG"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
       - name: Install frontend dependencies
-        run: npm install --legacy-peer-deps
+        run: npm ci --legacy-peer-deps
 
-      - name: Build
+      - name: Build signed updater artifacts
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm run tauri build -- --ci --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.windows-release.conf.json
 
-      - name: Upload installer and update manifest to Release
+      - name: Validate and stage release assets
+        shell: bash
+        run: node scripts/release-metadata.mjs "$RELEASE_TAG" src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis release-assets
+
+      - name: Upload and verify draft before publishing
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          TAG=${{ github.ref_name }}
-          VERSION=${TAG#v}
-          BUNDLE_DIR="src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
-
-          NSIS=$(find "$BUNDLE_DIR/nsis" -name "*-setup.exe" 2>/dev/null | head -1)
-          SIG=$(find "$BUNDLE_DIR" -name "*.sig" 2>/dev/null | head -1)
-          echo "NSIS: $NSIS"
-          echo "SIG: $SIG"
-
-          # Create release if it doesn't exist
-          gh release view "$TAG" 2>/dev/null || gh release create "$TAG" --title "$TAG" --notes "Release $TAG"
-
-          if [ -n "$NSIS" ]; then
-            gh release upload "$TAG" "$NSIS" --clobber
-            echo "Uploaded installer: $NSIS"
-          else
-            echo "No NSIS installer found"; exit 1
+          set -euo pipefail
+          TAG="$RELEASE_TAG"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release already exists; refusing to overwrite $TAG"
+            exit 1
           fi
-
-          # Build latest.json for auto-updater
-          NSIS_FILENAME=$(basename "$NSIS")
-          NSIS_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${NSIS_FILENAME}"
-          SIG_CONTENT=""
-          if [ -n "$SIG" ]; then
-            SIG_CONTENT=$(cat "$SIG")
-          fi
-
-          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-          cat > latest.json <<JSON
-          {
-            "version": "${VERSION}",
-            "notes": "Release ${TAG}",
-            "pub_date": "${PUB_DATE}",
-            "platforms": {
-              "windows-x86_64": {
-                "signature": "${SIG_CONTENT}",
-                "url": "${NSIS_URL}"
-              }
-            }
-          }
-          JSON
-
-          gh release upload "$TAG" latest.json --clobber
-          echo "Uploaded latest.json"
+          gh release create "$TAG" --verify-tag --draft --title "ADB WiFi Installer $TAG" --notes-file "docs/releases/$TAG.md"
+          gh release upload "$TAG" release-assets/*
+          gh release download "$TAG" --dir release-verification
+          for asset in release-assets/*; do
+            cmp "$asset" "release-verification/$(basename "$asset")"
+          done
+          gh release edit "$TAG" --draft=false --latest

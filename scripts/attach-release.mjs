@@ -26,13 +26,24 @@ export function assetAction(existing, expected) {
 
 export function validateAssets(manifest, version, readAsset) {
   assert.equal(manifest.version, version, "Manifest version mismatch");
-  const platform = manifest.platforms?.["windows-x86_64"];
-  assert.ok(platform?.signature?.trim(), "Updater signature missing");
-  const file = `ADB.WiFi.Installer_${version}_x64-setup.exe`;
-  assert.equal(platform.url, `https://github.com/${repository}/releases/download/v${version}/${file}`);
-  assert.ok(readAsset(file).length, "Installer is empty");
-  assert.equal(readAsset(`${file}.sig`).toString("utf8").trim(), platform.signature.trim(), "Manifest signature mismatch");
-  return [file, `${file}.sig`, "latest.json"];
+  const files = [];
+  assert.ok(manifest.platforms?.["windows-x86_64"], "Windows platform missing");
+  for (const [platform, entry] of Object.entries(manifest.platforms)) {
+    assert.ok(["windows-x86_64", "darwin-aarch64", "darwin-x86_64"].includes(platform), "Unsupported platform");
+    assert.ok(entry?.signature?.trim(), "Updater signature missing");
+    const suffix = platform === "windows-x86_64" ? "x64-setup.exe" : `${platform.slice(7)}.app.tar.gz`;
+    const file = `ADB.WiFi.Installer_${version}_${suffix}`;
+    assert.equal(entry.url, `https://github.com/${repository}/releases/download/v${version}/${file}`);
+    assert.ok(readAsset(file).length, "Installer is empty");
+    assert.equal(readAsset(`${file}.sig`).toString("utf8").trim(), entry.signature.trim(), "Manifest signature mismatch");
+    files.push(file, `${file}.sig`);
+    if (platform.startsWith("darwin-")) {
+      const dmg = `ADB.WiFi.Installer_${version}_${platform.slice(7)}.dmg`;
+      assert.ok(readAsset(dmg).length, "DMG is empty");
+      files.push(dmg);
+    }
+  }
+  return [...files, "latest.json"];
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -61,6 +72,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const read = name => readFileSync(join(directory, name));
     const files = validateAssets(JSON.parse(read("latest.json")), version, read);
     const downloaded = mkdtempSync(join(tmpdir(), "adb-release-verify-"));
+    const pending = [];
     for (const name of files) {
       assert.equal(basename(name), name);
       const release = currentRelease();
@@ -71,11 +83,13 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         gh("release", "download", tag, "--repo", repository, "--pattern", name, "--dir", downloaded);
         bytes = readFileSync(join(downloaded, name));
       }
-      if (assetAction(bytes, read(name)) === "upload") {
+      if (assetAction(bytes, read(name)) === "upload") pending.push(name);
+    }
+    for (const name of pending) {
+        validateRelease(currentRelease(), context);
         gh("release", "upload", tag, join(directory, name), "--repo", repository);
         gh("release", "download", tag, "--repo", repository, "--pattern", name, "--dir", downloaded);
         assert.ok(readFileSync(join(downloaded, name)).equals(read(name)), "Uploaded asset verification failed");
-      }
       console.log(`Verified ${name}`);
     }
     validateRelease(currentRelease(), context);

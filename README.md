@@ -119,6 +119,8 @@ bash build_release_mac.sh
 
 コード署名・公証（Notarization）まで自動で行います。Apple Developer Program への登録が必要です。
 
+GitHub Actions でも PR ごとに Windows・Mac（Apple Silicon / Intel）をビルドします。Mac の正式リリースには署名・公証用 Secret の設定と明示的な有効化が必要です。詳しくは [macOS Actions 設定](docs/macos-actions.md) を参照してください。
+
 ---
 
 ## Android デバイス側の準備

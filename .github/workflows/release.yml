@@ -1,4 +1,4 @@
-name: Windows builds
+name: Desktop builds
 
 on:
   pull_request:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.release.id }}
+  group: desktop-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.release.id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -40,13 +40,52 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  macos-pr-build:
+    name: macOS ${{ matrix.arch }} PR app (ad-hoc, not notarized)
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: aarch64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}-apple-darwin
+      - run: npm ci --legacy-peer-deps
+      - name: Build test application without release credentials
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: npm run tauri build -- --ci --target ${{ matrix.arch }}-apple-darwin --bundles app,dmg
+      - name: Verify ad-hoc test application signature
+        run: codesign --verify --deep --strict --verbose=2 'src-tauri/target/${{ matrix.arch }}-apple-darwin/release/bundle/macos/ADB WiFi Installer.app'
+      - name: Preserve application permissions and symlinks
+        run: tar -czf macos-${{ matrix.arch }}-pr.app.tar.gz -C src-tauri/target/${{ matrix.arch }}-apple-darwin/release/bundle/macos 'ADB WiFi Installer.app'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}-adhoc-pr-${{ github.event.pull_request.number }}-${{ github.sha }}
+          path: |
+            macos-${{ matrix.arch }}-pr.app.tar.gz
+            src-tauri/target/${{ matrix.arch }}-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
   release-build:
     name: Windows release assets (signed updater)
     if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: windows-latest
     timeout-minutes: 30
-    permissions:
-      contents: write
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name }}
       RELEASE_ID: ${{ github.event.release.id }}
@@ -75,6 +114,129 @@ jobs:
       - name: Validate and stage release assets
         shell: bash
         run: node scripts/release-metadata.mjs "$RELEASE_TAG" src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis release-assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  macos-release-build:
+    name: macOS ${{ matrix.arch }} release (Developer ID and notarization)
+    # Enable only after the owner has securely configured and authorized Apple credentials.
+    if: github.event_name == 'release' && github.event.action == 'published' && vars.MACOS_RELEASE_ENABLED == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: aarch64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      RELEASE_ID: ${{ github.event.release.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate published release and trusted source
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/attach-release.mjs --check
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}-apple-darwin
+      - run: npm ci --legacy-peer-deps
+      - name: Build Developer ID signed and notarized release
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_CONTENT TAURI_SIGNING_PRIVATE_KEY; do
+            if [ -z "${!name}" ]; then echo "::error::Missing required secret: $name"; exit 1; fi
+          done
+          if [[ "$APPLE_SIGNING_IDENTITY" != "Developer ID Application: "* ]]; then
+            echo "::error::APPLE_SIGNING_IDENTITY must be a Developer ID Application identity"; exit 1
+          fi
+          export APPLE_API_KEY_PATH="$RUNNER_TEMP/notarization-api-key.p8"
+          trap 'rm -f "$APPLE_API_KEY_PATH"' EXIT
+          umask 077
+          printf '%s' "$APPLE_API_KEY_CONTENT" > "$APPLE_API_KEY_PATH"
+          npm run tauri build -- --ci --target ${{ matrix.arch }}-apple-darwin --config src-tauri/tauri.macos-release.conf.json
+          for dmg in src-tauri/target/${{ matrix.arch }}-apple-darwin/release/bundle/dmg/*.dmg; do
+            xcrun notarytool submit "$dmg" --issuer "$APPLE_API_ISSUER" --key-id "$APPLE_API_KEY" --key "$APPLE_API_KEY_PATH" --wait
+            xcrun stapler staple "$dmg"
+          done
+      - name: Verify code signature and stapled notarization tickets
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP='src-tauri/target/${{ matrix.arch }}-apple-darwin/release/bundle/macos/ADB WiFi Installer.app'
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -d --verbose=4 "$APP" 2>&1 | grep -q 'Authority=Developer ID Application:'
+          spctl --assess --type execute --verbose=2 "$APP"
+          xcrun stapler validate "$APP"
+          for dmg in src-tauri/target/${{ matrix.arch }}-apple-darwin/release/bundle/dmg/*.dmg; do
+            xcrun stapler validate "$dmg"
+          done
+      - name: Stage macOS release assets
+        run: node scripts/macos-release-metadata.mjs "$RELEASE_TAG" '${{ matrix.arch }}' 'src-tauri/target/${{ matrix.arch }}-apple-darwin/release/bundle' release-assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release-assets:
+    name: Attach complete release assets and updater manifest
+    needs: [release-build, macos-release-build]
+    if: >-
+      always() && github.event_name == 'release' && github.event.action == 'published' &&
+      needs.release-build.result == 'success' &&
+      (needs.macos-release-build.result == 'success' ||
+       (needs.macos-release-build.result == 'skipped' && vars.MACOS_RELEASE_ENABLED != 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      RELEASE_ID: ${{ github.event.release.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Merge platform manifests once
+        env:
+          EXPECT_MACOS: ${{ vars.MACOS_RELEASE_ENABLED }}
+        run: node scripts/merge-release-manifests.mjs release-assets
       - name: Attach and verify assets on the published release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
